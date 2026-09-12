@@ -35,6 +35,7 @@ window.LocalMusicManager = {
     remasterSelectionEventsBound: false,
     remasterQualityEventsBound: false,
     remasterTaskRunning: false,
+    deduplicateInFlight: false,
     authExpired: false,
     authExpiredNotified: false,
     coverRenderTimer: null,
@@ -520,6 +521,89 @@ window.LocalMusicManager = {
 
     getItemKey(item) {
         return `${item.folder}\u0000${item.filename}`;
+    },
+
+    normalizeDedupText(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[、，,;；]/g, ',')
+            .replace(/\s+/g, ' ');
+    },
+
+    getDeduplicationKey(item) {
+        const name = this.normalizeDedupText(item?.name || item?.songInfo?.name);
+        const singer = this.normalizeDedupText(item?.singer || item?.songInfo?.singer);
+        if (name && singer && !['未知歌曲', 'unknown'].includes(name) && !['未知歌手', 'unknown'].includes(singer)) {
+            return `metadata:${name}:${singer}`;
+        }
+
+        const source = this.normalizeDedupText(item?.source || item?.songInfo?.source);
+        const songId = String(item?.songmid || item?.id || item?.songInfo?.songmid || item?.songInfo?.id || '').trim();
+        const reliableId = songId && source && !['unknown', 'local', 'temp'].includes(source) && !songId.includes(' - ');
+        return reliableId ? `id:${source}:${songId}` : `file:${this.getItemKey(item)}`;
+    },
+
+    getDedupQualityRank(item) {
+        const quality = String(item?.quality || '').toLowerCase();
+        if (quality === 'master' || quality === 'hires') return 5;
+        if (quality === 'flac24bit') return 4;
+        if (quality === 'flac') return 3;
+        if (quality === '320k') return 2;
+        if (quality === '192k') return 1;
+        if (quality === '128k') return 0;
+        return -1;
+    },
+
+    getDuplicateGroups() {
+        const groups = new Map();
+        this.originalData.forEach(item => {
+            const key = this.getDeduplicationKey(item);
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(item);
+        });
+
+        const compare = (left, right) => {
+            const leftSource = this.normalizeDedupText(left?.source || left?.songInfo?.source);
+            const rightSource = this.normalizeDedupText(right?.source || right?.songInfo?.source);
+            const leftKnown = leftSource && !['unknown', 'local', 'temp'].includes(leftSource) ? 1 : 0;
+            const rightKnown = rightSource && !['unknown', 'local', 'temp'].includes(rightSource) ? 1 : 0;
+            return rightKnown - leftKnown
+                || this.getDedupQualityRank(right) - this.getDedupQualityRank(left)
+                || Number(right?.mtime || 0) - Number(left?.mtime || 0)
+                || Number(right?.size || 0) - Number(left?.size || 0)
+                || String(left?.filename || '').localeCompare(String(right?.filename || ''));
+        };
+
+        return Array.from(groups.values())
+            .filter(items => items.length > 1)
+            .map(items => items.slice().sort(compare));
+    },
+
+    async deduplicate() {
+        if (this.deduplicateInFlight) return;
+        const groups = this.getDuplicateGroups();
+        const duplicates = groups.flatMap(items => items.slice(1));
+        if (duplicates.length === 0) {
+            if (typeof showInfo === 'function') showInfo('没有发现可去重的本地歌曲');
+            return;
+        }
+
+        const message = `发现 ${groups.length} 组重复歌曲，共 ${duplicates.length} 个重复文件。\n\n每组将保留音质最高、元信息更完整且较新的 1 个文件，删除其余文件。\n\n其中 unknown 文件也会按歌名和歌手参与判断，是否继续？`;
+        let confirmed = false;
+        if (typeof showSelect === 'function') {
+            confirmed = await showSelect('本地歌曲去重', message, { danger: true });
+        } else {
+            confirmed = confirm(message);
+        }
+        if (!confirmed) return;
+
+        this.deduplicateInFlight = true;
+        try {
+            await this._executeDelete(duplicates);
+        } finally {
+            this.deduplicateInFlight = false;
+        }
     },
 
     getSelectedEntries() {
