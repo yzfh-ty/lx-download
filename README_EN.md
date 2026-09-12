@@ -22,10 +22,20 @@
 ```bash
 git clone https://github.com/yzfh-ty/lx-download.git
 cd lx-download
-docker compose up -d --build
+# Edit docker-compose.yml and replace the WEBPLAYER_TOKEN placeholder.
+docker compose pull
+docker compose up -d
 ```
 
-Open `http://server-address:9527/` after startup. The default Web access Token is `123456`; change it before exposing the service.
+To manage settings through `.env`, use the environment-based template instead:
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.env.yml pull
+docker compose -f docker-compose.env.yml up -d
+```
+
+Open `http://server-address:9527/` after startup. For the main template, replace the `WEBPLAYER_TOKEN` placeholder in `docker-compose.yml`; for the environment-based template, set it in `.env`. Do not commit the real token.
 
 ### Run from source
 
@@ -61,7 +71,7 @@ Environment variables take precedence over `CONFIG_PATH`, `config.js`, and built
 | `DATA_PATH` | `./data` | SQLite database and custom source directory |
 | `LOG_PATH` | `./logs` | Log directory |
 | `PLAYER_PATH` | `/` | Web interface path |
-| `WEBPLAYER_TOKEN` | `123456` | Web access Token |
+| `WEBPLAYER_TOKEN` | Required, no default | Web access Token |
 | `ENABLE_CACHE_SIZE_LIMIT` | `false` | Limit server cache directory size |
 | `CACHE_SIZE_LIMIT` | `2000` | Server cache limit in MB |
 | `PROXY_HEADER` | `x-real-ip` | Reverse-proxy client IP header |

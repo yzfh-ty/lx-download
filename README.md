@@ -31,13 +31,24 @@ Web 端当前以“搜索、下载和管理”为核心，适合部署在个人�
 ```bash
 git clone https://github.com/yzfh-ty/lx-download.git
 cd lx-download
-docker compose up -d --build
+# 编辑 docker-compose.yml，至少替换 WEBPLAYER_TOKEN 占位符
+docker compose pull
+docker compose up -d
+```
+
+如需使用 `.env` 管理配置，可改用环境变量版模板：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少替换 WEBPLAYER_TOKEN
+docker compose -f docker-compose.env.yml pull
+docker compose -f docker-compose.env.yml up -d
 ```
 
 启动后访问：
 
 - Web 管理界面：`http://服务器地址:9527/`
-默认 Web 访问 Token 为 `123456`，首次启动后请立即修改。生产环境建议通过环境变量设置 Token，并不要把包含 Token 的配置文件提交到 Git。
+使用主模板时，请将 `docker-compose.yml` 中的 `WEBPLAYER_TOKEN` 占位符替换为随机且足够长的值；使用环境变量版时，在 `.env` 中设置。请不要把包含真实 Token 的 `.env` 或配置文件提交到 Git。
 
 Compose 默认将 `./data`、`./cache`、`./download` 和 `./logs` 分别挂载到容器。`data/` 只保存 SQLite 数据库和自定义音源；所有服务器缓存统一位于程序目录的 `cache/`，下载歌曲位于 `download/`。
 
@@ -94,7 +105,7 @@ Web 仅使用一个全局访问 Token，不区分用户或客户端；歌单、�
 | `DATA_PATH` | `./data` | 数据目录，包含 SQLite 数据库和自定义音源 |
 | `LOG_PATH` | `./logs` | 日志目录；Docker 默认位于 `/server/logs` |
 | `PLAYER_PATH` | `/` | Web 界面访问路径 |
-| `WEBPLAYER_TOKEN` | `123456` | Web 界面访问 Token |
+| `WEBPLAYER_TOKEN` | 必填，无默认值 | Web 界面访问 Token |
 | `ENABLE_CACHE_SIZE_LIMIT` | `false` | 是否启用服务器缓存目录容量限制（不清理下载目录） |
 | `CACHE_SIZE_LIMIT` | `2000` | 服务器缓存目录容量上限，单位 MB |
 | `PROXY_HEADER` | `x-real-ip` | 反向代理传递真实 IP 时使用的 Header |
