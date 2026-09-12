@@ -1,0 +1,62 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Build and coverage outputs
+lib-cov
+coverage
+.nyc_output
+build/
+dist-electron/
+
+# Dependency directories
+node_modules/
+jspm_packages/
+bower_components/
+
+# Tool caches and local config
+.npm
+.eslintcache
+.node_repl_history
+.grunt
+.lock-wscript
+.yarn-integrity
+.env
+docs/.vitepress/dist
+docs/.vitepress/cache
+docs/node_modules
+
+# Project data and generated files
+/data
+/server
+/cache
+/music
+/download
+/public/music/bin
+/tests/
+/reference/
+/temp
+/md
+/docs
+/notice
+
+# Local-only files
+knowledge
+lx-music-desktop-master
+debug.txt
+.stylelintrc.json
+.codegraph
+*.tgz
+
+# Local editor and runtime configuration
+.vscode/
+config.js

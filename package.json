@@ -1,0 +1,86 @@
+{
+  "name": "lx-music-download-server",
+  "private": true,
+  "scripts": {
+    "test:review": "node scripts/test-review-regressions.cjs",
+    "prebuild": "node scripts/download-binary.js",
+    "build": "rimraf server && tsc --project tsconfig.json && tsc-alias -p tsconfig.json",
+    "prestart": "node scripts/download-binary.js",
+    "start": "node ./index.js",
+    "dev": "nodemon",
+    "dev1": "nodemon --exec \"tsx --inspect=127.0.0.1:9301 ./src/index.ts\"",
+    "dev2": "nodemon --exec \"cmd /c start /affinity 1 /b /wait tsx --inspect=127.0.0.1:9302 ./src/index.ts\"",
+    "prd": "pm2 start ecosystem.config.js --env production"
+  },
+  "engines": {
+    "node": ">= 22.5.0",
+    "npm": ">= 8.5.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XCQ0607/lxserver.git"
+  },
+  "author": {
+    "name": "XCQ",
+    "email": "2406498704@qq.com"
+  },
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/XCQ0607/lxserver/issues"
+  },
+  "homepage": "https://github.com/XCQ0607/lxserver#readme",
+  "dependencies": {
+    "@foobar404/wave": "^2.0.5",
+    "@types/formidable": "^3.5.1",
+    "archiver": "^8.0.0",
+    "brace-expansion": "^5.0.6",
+    "crypto-js": "^4.2.0",
+    "file-type": "^22.0.1",
+    "formidable": "^3.5.4",
+    "iconv-lite": "^0.6.3",
+    "image-size": "^1.2.1",
+    "log4js": "^6.9.1",
+    "lru-cache": "^10.0.1",
+    "module-alias": "^2.3.4",
+    "music-tag-native": "^0.2.5",
+    "needle": "^3.3.1",
+    "node-id3": "^0.2.9",
+    "socks-proxy-agent": "^10.1.0",
+    "tunnel": "^0.0.6",
+    "unzipper": "^0.12.5",
+    "vm2": "^3.11.4"
+  },
+  "devDependencies": {
+    "@tsconfig/node16": "^16.1.1",
+    "@tsconfig/recommended": "^1.0.13",
+    "@types/archiver": "^8.0.0",
+    "@types/module-alias": "^2.0.4",
+    "@types/needle": "^3.3.0",
+    "@types/tunnel": "^0.0.7",
+    "@types/unzipper": "^0.10.11",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "chalk": "^4.1.2",
+    "changelog-parser": "^4.1.0",
+    "eslint-config-love": "^47.0.0",
+    "nodemon": "^3.1.14",
+    "rimraf": "^5.0.5",
+    "sharp": "^0.35.3",
+    "stylelint": "^17.6.0",
+    "stylelint-config-standard": "^40.0.0",
+    "ts-node": "^10.9.2",
+    "tsc-alias": "^1.8.16",
+    "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3"
+  },
+  "nodemonConfig": {
+    "ext": "js,ts",
+    "ignore": [
+      "data/",
+      "logs/",
+      "config.js"
+    ],
+    "exec": "npx tsx ./src/index.ts"
+  }
+}

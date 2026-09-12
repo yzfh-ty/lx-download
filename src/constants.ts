@@ -1,0 +1,20 @@
+export const ENV_PARAMS = [
+  'PORT',
+  'BIND_IP',
+  'CONFIG_PATH',
+  'LOG_PATH',
+  'DATA_PATH',
+  'PROXY_HEADER',
+  'WEBPLAYER_TOKEN',
+  'ENABLE_CACHE_SIZE_LIMIT',
+  'CACHE_SIZE_LIMIT',
+  'PROXY_ALL_ENABLED',
+  'PROXY_ALL_ADDRESS',
+  'PLAYER_PATH',
+  'SINGER_SOURCE_PRIORITY',
+] as const
+
+export const SPLIT_CHAR = {
+  DISLIKE_NAME: '@',
+  DISLIKE_NAME_ALIAS: '#',
+} as const

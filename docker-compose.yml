@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  lx-download-server:
+    build: .
+    container_name: lx-download-server
+    restart: always
+    ports:
+      - "9527:9527"
+    volumes:
+      # SQLite 数据库和自定义音源
+      - ./data:/server/data
+      # 统一缓存、下载文件和日志分别持久化
+      - ./cache:/server/cache
+      - ./download:/server/download
+      - ./logs:/server/logs
+    environment:
+      # 环境变量配置，优先级高于 config.js
+      - NODE_ENV=production
+      # 示例：通过环境变量设置 Web Token
+      # - WEBPLAYER_TOKEN=change-me
