@@ -153,6 +153,7 @@ export const getCoverCacheDir = (username?: string, location?: string) => {
 
 // --- Cache Index Manager ---
 export interface CacheItem {
+    downloadComplete?: boolean
     id: string
     songmid?: string
     name: string
@@ -762,6 +763,7 @@ const getFileName = (songInfo: any, quality?: string, isOnlyDownload?: boolean, 
 const sanitize = (str: any) => String(str || '').replace(/[\\/:*?"<>|]/g, '_')
 
 const activeDownloadPaths = new Set<string>()
+export const hasActiveDownloads = () => activeDownloadPaths.size > 0
 const reservedDownloadNames = new Set<string>()
 const allocateDownloadTempPath = (dir: string, songKey: string, pattern: string) => {
     const key = crypto.createHash('sha256').update(`${songKey}\0${pattern}`).digest('hex')
@@ -1658,6 +1660,7 @@ export const isSongCached = (songInfo: any, username?: string) => {
 
         const dir = getCacheDir(normalizedUsername, true)
         return indexManager.getAll(normalizedUsername, 'music').some(item => {
+            if (item.downloadComplete === false) return false
             const itemPath = item.filename ? path.join(dir, item.filename) : ''
             if (!itemPath || !fs.existsSync(itemPath)) return false
 
@@ -1672,6 +1675,13 @@ export const isSongCached = (songInfo: any, username?: string) => {
         return false
     }
 }
+
+/** Index rows can be installed before tagging finishes. Only expose completed audio to playlists. */
+export const getReadyDownloadedSongs = () => indexManager.getAll('shared', 'music').filter(item => {
+    if (item.downloadComplete === false) return false
+    const progress = cacheProgress.get(normalizeSongId(item) + '_' + item.quality)
+    return !progress || ['finished', 'exists'].includes(progress.status)
+})
 
 export const checkLyricCache = (songInfo: any, username?: string) => {
     const id = normalizeSongId(songInfo)
@@ -2019,11 +2029,13 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
         const targetFolder: 'cache' | 'music' = isOnlyDownload ? 'music' : 'cache'
         if (result.folder === targetFolder && result.path) {
             await ensureCachedLyrics(songInfo, quality || result.quality, username, isOnlyDownload, result.path, targetFolder, shouldCacheLyric, shouldEmbedLyric, lyricOptions)
+            const readyItem = indexManager.getAll(username || 'shared', targetFolder).find(item => item.filename === result.filename)
+            if (readyItem) { readyItem.downloadComplete = true; indexManager.save(username || 'shared', targetFolder) }
             console.log(`[FileCache] Song already exists in ${targetFolder}, skipping download: ${result.filename}`)
             // 通知前端轮询：目标目录文件已存在，视为立即完成
             cacheProgress.set(songKey, { progress: 100, status: 'exists' })
             setTimeout(() => cacheProgress.delete(songKey), 30000)
-            return Promise.resolve()
+            return result.filename
         }
 
         if (isOnlyDownload && result.folder === 'cache' && result.path) {
@@ -2105,20 +2117,20 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
             console.log(`[FileCache] Copied cached song to music folder: ${path.basename(finalPath)}`)
             cacheProgress.set(songKey, { progress: 100, status: 'finished', total: stat.size, received: stat.size })
             setTimeout(() => cacheProgress.delete(songKey), 30000)
-            return Promise.resolve()
+            return path.basename(finalPath)
         }
 
         console.log(`[FileCache] Song already exists in ${result.folder}, skipping download: ${result.filename}`)
         cacheProgress.set(songKey, { progress: 100, status: 'exists' })
         setTimeout(() => cacheProgress.delete(songKey), 30000)
-        return Promise.resolve()
+        return result.filename
     }
 
     if (signal?.aborted) return
     const tempPath = allocateDownloadTempPath(dir, songKey, songInfo.__fileNamePattern || currentNamingPattern)
     console.log(`[FileCache] Starting download for: ${baseName}`)
 
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<string>((resolve, reject) => {
         let req: http.ClientRequest
         let response: http.IncomingMessage | undefined
         let output: fs.WriteStream | undefined
@@ -2364,6 +2376,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                     const folderType: 'cache' | 'music' = isOnlyDownload ? 'music' : 'cache'
 
                     indexManager.update(normalizedUsername, {
+                        downloadComplete: false,
                         id, songmid: id, name: metadata.name, singer: metadata.singer,
                         album: metadata.album, albumId: metadata.albumId, img: metadata.img,
                         interval: metadata.interval, source: metadata.source, requestedSource,
@@ -2423,11 +2436,13 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                     }
 
                     await ensureCachedLyrics(songInfo, actualQuality, username, isOnlyDownload, finalPath, folderType, shouldCacheLyric, shouldEmbedLyric, lyricOptions)
+                    const completedItem = indexManager.getAll(normalizedUsername, folderType).find(item => item.filename === finalBaseName + ext)
+                    if (completedItem) { completedItem.downloadComplete = true; indexManager.save(normalizedUsername, folderType) }
 
                     cacheProgress.set(songKey, { progress: 100, status: 'finished', total: total || received, received, speed: 0, updatedAt: Date.now() })
                     setTimeout(() => cacheProgress.delete(songKey), 30000)
                     settle(() => {
-                        resolve()
+                        resolve(finalBaseName + ext)
                         if (!isOnlyDownload) void checkAndCleanupCache(username)
                     })
                 }).catch(fail)

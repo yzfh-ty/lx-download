@@ -11,6 +11,7 @@
 
   const SubscriptionManager = {
     cache: [],
+    unmatchedPlaylist: null,
     settings: { intervalMinutes: 360 },
     loaded: false,
 
@@ -33,8 +34,11 @@
       try {
         const data = await this._api('/subscriptions')
         this.cache = Array.isArray(data.data) ? data.data : []
+        this.unmatchedPlaylist = data.unmatchedPlaylist || null
         if (data.settings && data.settings.intervalMinutes) this.settings.intervalMinutes = data.settings.intervalMinutes
         this.loaded = true
+        const board = window.LeaderboardManager?.getCurrentBoard?.()
+        if (board?.bangid) this.updateLeaderboardButton(board.source, board.bangid)
       } catch (e) {
         console.error('[Subscription] 加载订阅失败:', e)
         this.cache = []
@@ -42,8 +46,8 @@
       return this.cache
     },
 
-    find(source, sourceListId) {
-      return this.cache.find(s => s.source === source && String(s.sourceListId) === String(sourceListId)) || null
+    find(source, sourceListId, kind = 'playlist') {
+      return this.cache.find(s => (s.kind || 'playlist') === kind && s.source === source && String(s.sourceListId) === String(sourceListId)) || null
     },
 
     // ===== 歌单详情页入口 =====
@@ -64,6 +68,37 @@
         btn.classList.add('t-text-muted')
         if (label) label.textContent = '订阅歌单'
       }
+    },
+
+    updateLeaderboardButton(source, bangid) {
+      const btn = document.getElementById('lb-subscribe-btn')
+      if (!btn) return
+      const sub = this.loaded ? this.find(source, bangid, 'leaderboard') : null
+      btn.title = sub ? '已订阅（自动下载榜单新增歌曲，点击管理）' : '订阅榜单：定时自动同步并下载新增歌曲'
+      btn.classList.toggle('text-emerald-500', !!sub)
+      btn.classList.toggle('text-gray-500', !sub)
+    },
+
+    async handleLeaderboardButton() {
+      const board = window.LeaderboardManager?.getCurrentBoard?.()
+      if (!board || !board.bangid) {
+        if (window.showError) showError('请先选择一个榜单')
+        return
+      }
+      await this.load(true)
+      const sub = this.find(board.source, board.bangid, 'leaderboard')
+      if (sub) {
+        await this.manageExisting(sub)
+        this.updateLeaderboardButton(board.source, board.bangid)
+        return
+      }
+      await this.subscribeFlow({
+        kind: 'leaderboard',
+        source: board.source,
+        id: board.bangid,
+        info: { name: board.name }
+      })
+      this.updateLeaderboardButton(board.source, board.bangid)
     },
 
     async handleDetailButton() {
@@ -121,7 +156,7 @@
               <select id="subscription-edit-source" class="w-full rounded-xl border t-border-main px-3 py-2.5 text-sm t-bg-main focus:outline-none focus:ring-2 focus:ring-emerald-500"></select>
             </div>
             <div>
-              <label for="subscription-edit-id" class="block text-xs font-bold t-text-main mb-1.5">歌单 ID</label>
+              <label for="subscription-edit-id" class="block text-xs font-bold t-text-main mb-1.5">${sub.kind === 'leaderboard' ? '榜单' : '歌单'} ID</label>
               <input id="subscription-edit-id" type="text" required autocomplete="off" spellcheck="false"
                 class="w-full rounded-xl border t-border-main px-3 py-2.5 text-sm t-bg-main focus:outline-none focus:ring-2 focus:ring-emerald-500" />
             </div>
@@ -218,13 +253,14 @@
       })
     },
 
-    async subscribeFlow(detail) {
+    async subscribeFlow(detail, kind = 'playlist') {
       const quality = await this._chooseQuality()
       if (!quality) return
 
       try {
-        if (window.showInfo) showInfo('正在拉取歌单并加入下载队列，请稍候...')
+        if (window.showInfo) showInfo(`正在拉取${detail.kind === 'leaderboard' ? '榜单' : '歌单'}并加入下载队列，请稍候...`)
         const data = await this._api('/subscriptions', 'POST', {
+          kind: detail.kind || kind,
           source: detail.source,
           sourceListId: detail.id,
           name: (detail.info && (detail.info.name || detail.info.title)) || '',
@@ -241,13 +277,14 @@
     },
 
     async manageExisting(sub) {
-      const options = ['立即检查更新', '编辑订阅', '修改下载音质', '取消订阅']
-      const picked = await showOptions(`管理订阅：${sub.name || sub.sourceListId}`, `歌单 ID: ${sub.sourceListId}\n音质: ${sub.quality} | 已收录 ${sub.knownCount} 首`, options)
+      const options = ['立即检查更新', '重新生成 M3U8', '编辑订阅', '修改下载音质', '取消订阅']
+      const targetLabel = sub.kind === 'leaderboard' ? '榜单' : '歌单'
+      const picked = await showOptions(`管理订阅：${sub.name || sub.sourceListId}`, `${targetLabel} ID: ${sub.sourceListId}\n音质: ${sub.quality} | 已收录 ${sub.knownCount} 首`, options)
       if (!picked) return
 
       try {
         if (picked === '立即检查更新') {
-          if (window.showInfo) showInfo('正在检测歌单更新...')
+          if (window.showInfo) showInfo(`正在检测${sub.kind === 'leaderboard' ? '榜单' : '歌单'}更新...`)
           const data = await this._api('/subscriptions/check', 'POST', { id: sub.id })
           const r = Array.isArray(data.data) ? data.data[0] : null
           if (!r) throw new Error('无检测结果')
@@ -264,6 +301,8 @@
             if (window.showSuccess) showSuccess('歌单暂无更新')
           }
           await this.load(true)
+        } else if (picked === '重新生成 M3U8') {
+          await this.rebuild(sub.id)
         } else if (picked === '编辑订阅') {
           await this.edit(sub.id)
         } else if (picked === '修改下载音质') {
@@ -331,14 +370,20 @@
           ? `检测失败: ${this._escape(sub.stats.lastError)}`
           : `已收录 ${sub.knownCount} 首 | 上次检测 ${this._formatTime(sub.lastCheckedAt)}`
         return `
-          <div class="flex items-center justify-between gap-3 py-2 border-b t-border-main" data-sub-id="${sub.id}">
+          <div class="flex flex-wrap items-center justify-between gap-3 py-2 border-b t-border-main" data-sub-id="${sub.id}">
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 t-text-muted font-mono">${sourceName}</span>
                 <span class="text-sm font-bold t-text-main truncate">${this._escape(sub.name || sub.sourceListId)}</span>
               </div>
-              <div class="text-[10px] t-text-muted mt-0.5 font-mono truncate" title="歌单 ID: ${this._escape(sub.sourceListId)}">歌单 ID: ${this._escape(sub.sourceListId)}</div>
+              <div class="text-[10px] t-text-muted mt-0.5 font-mono truncate" title="${sub.kind === 'leaderboard' ? '榜单' : '歌单'} ID: ${this._escape(sub.sourceListId)}">${sub.kind === 'leaderboard' ? '榜单' : '歌单'} ID: ${this._escape(sub.sourceListId)}</div>
               <div class="text-xs t-text-muted mt-1 truncate ${sub.enabled ? '' : 'opacity-50'}">${statusText}</div>
+              <div class="text-xs t-text-muted mt-1">累计发现 ${Number(sub.stats.detected || 0)} 首 · 累计入队 ${Number(sub.stats.enqueued || 0)} 首 · 本地可用 ${Number(sub.localCount || 0)} 首 · 已写入歌单 ${Number(sub.playlistTrackCount || 0)} 首</div>
+              <div class="text-xs t-text-muted mt-1 break-all">歌单文件：${this._escape(sub.playlistPath || '下次检查时创建')}（相对于下载目录）</div>
+              <div class="text-xs mt-1 ${sub.playlistLastError ? 'text-red-500' : 't-text-muted'}">${sub.playlistLastError
+                ? '歌单同步失败：' + this._escape(sub.playlistLastError)
+                : sub.playlistUpdatedAt ? `M3U8 更新于 ${this._formatTime(sub.playlistUpdatedAt)}，等待 Navidrome 扫描${sub.enabled ? '' : '；订阅已暂停'}` : '等待生成 M3U8'}</div>
+              <button onclick="window.SubscriptionManager.rebuild('${sub.id}', this)" class="mt-1 min-h-[44px] px-2 text-xs t-text-muted hover:text-emerald-500 rounded-lg focus-visible:ring-2 focus-visible:ring-emerald-500">重新生成 M3U8</button>
             </div>
             <div class="flex items-center gap-1 flex-shrink-0">
               <button onclick="window.SubscriptionManager.edit('${sub.id}')" class="p-1.5 t-text-muted hover:text-violet-500 rounded-lg hover:t-bg-track" title="编辑订阅"><i class="fas fa-edit text-xs"></i></button>
@@ -351,7 +396,17 @@
 
       container.innerHTML = `
         <div class="t-bg-panel rounded-2xl shadow-sm border t-border-main p-4 sm:p-8 w-full min-h-full space-y-4">
-          <p class="text-xs t-text-muted mb-4">在歌单详情页点击“订阅歌单”按钮订阅网络歌单。服务端会按以下间隔定时拉取远端歌单，自动对比并将新增歌曲加入下载队列，无需保持浏览器开启。</p>
+          <p class="text-xs t-text-muted mb-4">订阅歌单或排行榜后，服务端自动下载歌曲并在下载目录下生成同名目录和 M3U8，无需保持浏览器开启。将下载目录挂载到 Navidrome 音乐库并启用歌单自动导入，即可在扫描后更新歌单。远端移除歌曲或取消订阅时，已下载文件仍会保留。</p>
+          ${this.unmatchedPlaylist ? `
+            <div class="rounded-xl border t-border-main p-3 space-y-2">
+              <div class="text-sm font-bold t-text-main">未匹配 <span class="text-xs font-normal t-text-muted">自动维护 · ${Number(this.unmatchedPlaylist.playlistTrackCount || 0)} 首</span></div>
+              <p class="text-xs t-text-muted">收录未匹配任何订阅（包含暂停订阅）的本地歌曲，直接引用原文件；匹配后自动移出此歌单，音频文件保留。</p>
+              <div class="text-xs t-text-muted break-all">歌单文件：${this._escape(this.unmatchedPlaylist.playlistPath || '等待本地扫描')}（相对于下载目录）</div>
+              <div class="text-xs ${this.unmatchedPlaylist.playlistLastError ? 'text-red-500' : 't-text-muted'}">${this.unmatchedPlaylist.playlistLastError
+                ? '同步失败：' + this._escape(this.unmatchedPlaylist.playlistLastError)
+                : '上次更新：' + this._formatTime(this.unmatchedPlaylist.playlistUpdatedAt)}</div>
+              <button onclick="window.SubscriptionManager.rebuild('local-unmatched', this)" class="min-h-[44px] px-2 text-xs t-text-muted hover:text-emerald-500 rounded-lg focus-visible:ring-2 focus-visible:ring-emerald-500">重新生成未匹配歌单</button>
+            </div>` : ''}
           <div class="flex items-center justify-between pb-3 border-b t-border-main">
             <div>
               <div class="text-sm font-bold t-text-main">订阅检测间隔</div>
@@ -419,6 +474,21 @@
       await this.renderSettingsPanel()
     },
 
+    async rebuild(id, button) {
+      if (button) { button.disabled = true; button.textContent = '正在生成…' }
+      try {
+        const data = await this._api('/subscriptions/rebuild', 'POST', { id })
+        if (id === 'local-unmatched') this.unmatchedPlaylist = data.data
+        else this._replace(data.data)
+        if (window.showSuccess) showSuccess(`M3U8 已生成，包含 ${data.data.playlistTrackCount || 0} 首本地歌曲；Navidrome 扫描后生效`)
+      } catch (e) {
+        if (window.showError) showError('生成失败：' + e.message)
+      } finally {
+        if (button) { button.disabled = false; button.textContent = '重新生成 M3U8' }
+      }
+      await this.renderSettingsPanel()
+    },
+
     async toggleEnabled(id) {
       const sub = this.cache.find(s => s.id === id)
       if (!sub) return
@@ -435,7 +505,7 @@
       const sub = this.cache.find(s => s.id === id)
       if (!sub) return
       if (typeof showSelect !== 'function') return
-      const confirmed = await showSelect('取消订阅', `确定取消订阅「${sub.name || sub.sourceListId}」？\n（不会删除已下载的歌曲文件）`, {
+      const confirmed = await showSelect('取消订阅', `确定取消订阅「${sub.name || sub.sourceListId}」？\n歌单目录、M3U8 和已下载音乐都会保留，M3U8 将停止自动更新。`, {
         danger: true,
         confirmText: '确认取消'
       })

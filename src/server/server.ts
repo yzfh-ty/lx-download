@@ -858,7 +858,13 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
                 res.end(JSON.stringify({ success: false, error: 'Unauthorized to change download directory' }))
                 return
               }
+              if (fileCache.hasActiveDownloads() || serverDownloadQueue.list('shared').some(task => ['downloading', 'tagging'].includes(task.status))) {
+                throw new Error('请等待正在下载或写入标签的任务结束，再修改下载目录')
+              }
               fileCache.setDownloadDir(downloadDir)
+              const scan = fileCache.syncCacheIndex('shared', ['music'])
+              serverDownloadQueue.setLocalMusicScanPromise(scan)
+              void scan.then(() => playlistSubscription.notifyLocalScanComplete()).catch(err => console.warn('[PlaylistSync] Directory scan failed:', err?.message))
               if (global.lx.config) global.lx.config.downloadDir = fileCache.getDownloadDir()
               // Persist the server-side download path so a restart does not revert it.
               if (global.lx.saveConfig) global.lx.saveConfig()
@@ -898,6 +904,7 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
 
         try {
           await fileCache.syncCacheIndex(username, ['music'])
+          playlistSubscription.notifyLocalScanComplete()
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: true, message: 'Sync completed' }))
         } catch (e) {
@@ -1227,7 +1234,7 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
           return
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ success: true, data: playlistSubscription.list(username), settings: playlistSubscription.getSettings() }))
+        res.end(JSON.stringify({ success: true, data: playlistSubscription.list(username), settings: playlistSubscription.getSettings(), unmatchedPlaylist: playlistSubscription.getUnmatchedPlaylist() }))
         return
       }
 
@@ -1296,7 +1303,7 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
         return
       }
 
-      if (pathname === '/api/music/subscriptions/check' && req.method === 'POST') {
+      if ((pathname === '/api/music/subscriptions/check' || pathname === '/api/music/subscriptions/rebuild') && req.method === 'POST') {
         const username = getCacheRequestUsername(req)
         if (!username) {
           res.writeHead(401, { 'Content-Type': 'application/json' })
@@ -1306,7 +1313,14 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
         await readBody(req).then(async body => {
           try {
             const { id, all } = JSON.parse(body)
-            const results = await playlistSubscription.checkNow(username, all ? undefined : id)
+            if (pathname.endsWith('/rebuild') && !id) throw new Error('缺少订阅 ID')
+            if (pathname.endsWith('/rebuild') && id === 'local-unmatched') {
+              await fileCache.syncCacheIndex(username, ['music'])
+              playlistSubscription.notifyLocalScanComplete()
+            }
+            const results = pathname.endsWith('/rebuild')
+              ? playlistSubscription.rebuildPlaylist(username, id)
+              : await playlistSubscription.checkNow(username, all ? undefined : id)
             res.writeHead(200, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ success: true, data: results }))
           } catch (err: any) {
@@ -2799,6 +2813,9 @@ export const startServer = async (port: number, ip: string) => {
     normalizeSongInfo,
     enqueue: (_username, tasks) => serverDownloadQueue.enqueue('shared', tasks),
     getCachedSongs: username => fileCache.getCacheList(username),
+    getDownloadRoot: () => fileCache.getCacheDir('shared', true),
+    getReadySongs: () => [...fileCache.getReadyDownloadedSongs(), ...serverDownloadQueue.getCompletedSongs()],
+    initialScan: localMusicScanPromise,
     getDownloadOptions: (_username) => {
       try {
         const saved = getJson<Record<string, any>>('settings', 'shared', {})
@@ -2827,6 +2844,8 @@ export const startServer = async (port: number, ip: string) => {
       }
     },
   })
+
+  serverDownloadQueue.setCompletionListener(() => playlistSubscription.scheduleReconcile())
 
   remasterQueue.initialize(async (songInfo, requestedQuality, username) => {
     const apiUsername = username === '_open' ? 'open' : username

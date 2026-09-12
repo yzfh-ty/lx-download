@@ -8,6 +8,9 @@ export interface ServerDownloadTask {
   songKey: string
   activeSongKey?: string
   songInfo: any
+  originalSongInfo?: any
+  finalRelativePath?: string
+  downloadRoot?: string
   quality: string
   requestedQuality: string
   status: ServerDownloadStatus
@@ -73,6 +76,14 @@ let initialized = false
 let processing = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let localMusicScanReady = true
+let onCompleted: (() => void) | undefined
+export const setCompletionListener = (listener: () => void) => { onCompleted = listener }
+const notifyCompleted = () => {
+  try { onCompleted?.() } catch (err: any) { console.warn('[PlaylistSync] Completion callback failed:', err?.message) }
+}
+export const getCompletedSongs = () => Array.from(tasks.values())
+  .filter(task => ['finished', 'exists'].includes(task.status) && task.finalRelativePath && task.downloadRoot === fileCache.getCacheDir('shared', true))
+  .map(task => ({ ...task.songInfo, songInfo: task.originalSongInfo || task.songInfo, filename: task.finalRelativePath }))
 const activeSongIdentities = new Set<string>()
 
 const SHARED_SCOPE = 'shared'
@@ -144,6 +155,9 @@ const loadTasks = () => {
         songKey: String(raw.songKey || `${fileCache.normalizeSongId(raw.songInfo)}_${requestedQuality}`),
         activeSongKey: status === 'waiting' ? undefined : raw.activeSongKey ? String(raw.activeSongKey) : undefined,
         songInfo: raw.songInfo,
+        originalSongInfo: raw.originalSongInfo || raw.songInfo,
+        finalRelativePath: raw.finalRelativePath,
+        downloadRoot: raw.downloadRoot,
         quality: status === 'waiting' ? requestedQuality : quality,
         requestedQuality,
         status,
@@ -200,13 +214,15 @@ const getPublicTask = (task: ServerDownloadTask) => {
 
 const runTask = async (task: ServerDownloadTask) => {
   if (!localMusicScanReady || !resolver || task.status !== 'waiting') return
-  const identity = getTaskIdentity(task.songInfo)
+  const identity = getTaskIdentity(task.originalSongInfo || task.songInfo)
   if (activeSongIdentities.has(identity)) return
   activeSongIdentities.add(identity)
   const key = taskMapKey(SHARED_SCOPE, task.id)
   let controller: AbortController | undefined
 
   try {
+    task.originalSongInfo ||= task.songInfo
+    task.downloadRoot = fileCache.getCacheDir?.('shared', true)
     if (fileCache.isSongCached(task.songInfo, SHARED_SCOPE)) {
       task.status = 'exists'
       task.progress = 100
@@ -215,7 +231,9 @@ const runTask = async (task: ServerDownloadTask) => {
       task.speed = 0
       task.errorMsg = ''
       task.updatedAt = Date.now()
+      task.finalRelativePath = fileCache.getReadyDownloadedSongs?.().find(item => getTaskIdentity(item) === getTaskIdentity(task.songInfo) || fileCache.normalizeSongId(item) === fileCache.normalizeSongId(task.songInfo))?.filename
       scheduleSave()
+      notifyCompleted()
       return
     }
 
@@ -239,7 +257,7 @@ const runTask = async (task: ServerDownloadTask) => {
     task.updatedAt = Date.now()
     scheduleSave()
 
-    await fileCache.downloadAndCache(task.songInfo, resolved.url, task.quality, SHARED_SCOPE, controller.signal,
+    const finalRelativePath = await fileCache.downloadAndCache(task.songInfo, resolved.url, task.quality, SHARED_SCOPE, controller.signal,
       true, task.cacheLyric, task.embedLyric, {
         requestedSource: resolved.requestedSource,
         downloadSource: resolved.downloadSource,
@@ -268,6 +286,9 @@ const runTask = async (task: ServerDownloadTask) => {
     task.received = Number(progress?.received || task.total || 0)
     task.speed = 0
     task.errorMsg = ''
+    task.finalRelativePath = finalRelativePath
+    saveNow()
+    notifyCompleted()
   } catch (err: any) {
     if (controller?.signal.aborted || err?.message === 'Aborted') {
       task.status = 'paused'
@@ -296,7 +317,7 @@ const processQueue = async () => {
         if (tasks.has(key)) activeCount++
       }
       const next = Array.from(tasks.values()).find(task => (
-        task.status === 'waiting' && activeCount < concurrency && !activeSongIdentities.has(getTaskIdentity(task.songInfo))
+        task.status === 'waiting' && activeCount < concurrency && !activeSongIdentities.has(getTaskIdentity(task.originalSongInfo || task.songInfo))
       ))
       if (!next) break
       void runTask(next)
@@ -346,8 +367,9 @@ export const enqueue = (_username: string, inputs: QueueInput[]) => {
     if (!input?.songInfo) continue
     const identity = getTaskIdentity(input.songInfo)
     const hasExistingIdentity = Array.from(tasks.values()).some(task => (
-      getTaskIdentity(task.songInfo) === identity &&
-      ['waiting', 'downloading', 'tagging', 'finished', 'exists'].includes(task.status)
+      getTaskIdentity(task.originalSongInfo || task.songInfo) === identity &&
+      (['waiting', 'downloading', 'tagging', 'paused'].includes(task.status) ||
+        (['finished', 'exists'].includes(task.status) && fileCache.isSongCached(task.songInfo, SHARED_SCOPE)))
     ))
     if (hasExistingIdentity) continue
     const id = sanitizeId(input.id)
@@ -361,6 +383,8 @@ export const enqueue = (_username: string, inputs: QueueInput[]) => {
       existing.songKey = fileCache.normalizeSongId(input.songInfo) + '_' + quality
       existing.activeSongKey = undefined
       existing.songInfo = input.songInfo
+      existing.originalSongInfo = input.songInfo
+      existing.finalRelativePath = undefined
       existing.quality = quality
       existing.requestedQuality = quality
       existing.status = 'waiting'
@@ -392,6 +416,7 @@ export const enqueue = (_username: string, inputs: QueueInput[]) => {
       id,
       songKey: fileCache.normalizeSongId(input.songInfo) + '_' + quality,
       songInfo: input.songInfo,
+      originalSongInfo: input.songInfo,
       quality,
       requestedQuality: quality,
       status: 'waiting', progress: 0, total: 0, received: 0, speed: 0, errorMsg: '',

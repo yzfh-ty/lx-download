@@ -322,6 +322,9 @@ window.LeaderboardManager = (function () {
     function selectBoard(bangid, name) {
         state.currentBangid = bangid;
         state.currentBoardName = name;
+        if (window.SubscriptionManager?.updateLeaderboardButton) {
+            window.SubscriptionManager.updateLeaderboardButton(state.source, bangid);
+        }
         state.page = 1;
         state.localPage = 1;
         state.songs = [];
@@ -398,6 +401,9 @@ window.LeaderboardManager = (function () {
         state.currentBangid = null;
         state.currentBoardName = '';
         state.songs = [];
+        if (window.SubscriptionManager?.updateLeaderboardButton) {
+            window.SubscriptionManager.updateLeaderboardButton(state.source, null);
+        }
         state.page = 1;
         updateBoardTitle('');
         loadBoards(state.source);
@@ -444,6 +450,14 @@ window.LeaderboardManager = (function () {
 
         getCurrentSource: function () {
             return state.source;
+        },
+
+        getCurrentBoard: function () {
+            return {
+                source: state.source,
+                bangid: state.currentBangid,
+                name: state.currentBoardName
+            };
         },
     };
 })();

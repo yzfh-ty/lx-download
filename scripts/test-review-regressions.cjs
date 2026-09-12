@@ -121,8 +121,10 @@ async function main() {
   const base = `http://127.0.0.1:${server.address().port}`;
   await check('R02 simultaneous same-name downloads keep distinct bytes', async () => {
     const { api } = fileCacheHarness('concurrent');
-    await Promise.all([api.downloadAndCache(song(1), base + '/one', 'flac', 'shared', undefined, true, false, false, {}, options), api.downloadAndCache(song(2), base + '/two', 'flac', 'shared', undefined, true, false, false, {}, options)]);
+    const finalPaths = await Promise.all([api.downloadAndCache(song(1), base + '/one', 'flac', 'shared', undefined, true, false, false, {}, options), api.downloadAndCache(song(2), base + '/two', 'flac', 'shared', undefined, true, false, false, {}, options)]);
     const items = api.indexManager.getAll('shared', 'music'); assert.equal(items.length, 2); assert.notEqual(items[0].filename, items[1].filename);
+    assert.deepEqual([...finalPaths].sort(), Array.from(items, item => item.filename).sort());
+    assert.equal(api.getReadyDownloadedSongs().length, 2); assert(items.every(item => item.downloadComplete === true));
     const files = items.map(item => fs.readFileSync(path.join(api.getCacheDir('shared', true), item.filename)));
     assert(files.some(buffer => buffer.equals(audio(1)))); assert(files.some(buffer => buffer.equals(audio(2))));
   });
@@ -170,7 +172,7 @@ async function main() {
     const api = evaluate(source, ['initialize', 'subscribe', 'update', 'checkNow', 'list'], {
       fileCache: { normalizeSongId: item => item.id }, getJson: (_n, _k, fallback) => fallback, setJson() {}, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1
     });
-    api.initialize({ musicSdk: { mg: { songList: { getListDetail: fetch } } }, normalizeSongInfo: song => song, enqueue, getCachedSongs }); return api;
+    api.initialize({ musicSdk: { mg: { songList: { getListDetail: fetch }, leaderboard: { getList: fetch } } }, normalizeSongInfo: song => song, enqueue, getCachedSongs }); return api;
   }
   await check('R04 pause/check/resume queues new songs exactly once', async () => {
     let list = [{ id: 'A' }]; const queued = [];
@@ -194,6 +196,12 @@ async function main() {
     const [result] = await api.checkNow('shared', sub.id);
     assert.equal(result.skippedExisting, 1); assert.equal(result.enqueued, 1);
     assert.deepEqual(queued.map(item => item.songInfo.id), ['B']);
+  });
+  await check('Leaderboard subscription uses the leaderboard provider', async () => {
+    const queued = [];
+    const api = subscriptions(async () => ({ list: [{ id: 'A' }], total: 1 }), (_u, tasks) => { queued.push(...tasks); return tasks; });
+    const sub = await api.subscribe('shared', { kind: 'leaderboard', source: 'mg', sourceListId: '666' });
+    assert.equal(sub.kind, 'leaderboard'); assert.deepEqual(queued.map(item => item.songInfo.id), ['A']);
   });
   await check('Server queue waits for local scan and deduplicates concurrent songs', async () => {
     const source = fs.readFileSync(path.join(root, 'src/server/serverDownloadQueue.ts'), 'utf8').replace(/^import .*$/gm, '').replace(/^export /gm, '');
@@ -256,6 +264,7 @@ async function main() {
         if (name === '@/utils/pathSafety') return safety;
         if (name === '@/utils/configLog') return extract('src/utils/configLog.ts', ['formatConfigLogValue']);
         if (name === './fileCache') return api;
+        if (name === './serverDownloadQueue') return { list: () => [], setLocalMusicScanPromise() {} };
         if (name === '@/storage/database') return { getJson: (_n, _k, fallback) => fallback, setJson() {} };
         if (name.startsWith('./') || name.startsWith('@/')) return {};
         return require(name);

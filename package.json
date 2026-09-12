@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test:review": "node scripts/test-review-regressions.cjs",
+    "test:playlist-sync": "node scripts/test-playlist-sync.cjs",
     "prebuild": "node scripts/download-binary.js",
     "build": "rimraf server && tsc --project tsconfig.json && tsc-alias -p tsconfig.json",
     "prestart": "node scripts/download-binary.js",
