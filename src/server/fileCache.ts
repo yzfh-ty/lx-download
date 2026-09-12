@@ -1635,6 +1635,44 @@ export const checkCache = (songInfo: any, username?: string, isLyricCheck: boole
     return { exists: false }
 }
 
+const normalizeSongIdentityText = (value: unknown) => String(value || '')
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[、，,;；]/g, ',')
+    .replace(/\s+/g, ' ')
+
+/**
+ * 判断下载目录中是否已经存在这首歌的任意一版。
+ *
+ * 订阅和服务端队列使用这个检查，而普通下载仍使用 checkCache 的
+ * 音质/来源语义。这样可以兼容旧文件缺少平台 ID、被索引为 unknown
+ * 的情况，同时保证订阅更新不会再产生第二份同名歌曲。
+ */
+export const isSongCached = (songInfo: any, username?: string) => {
+    try {
+        const normalizedUsername = (username && username !== '_open' && username !== 'default') ? username : '_open'
+        const id = normalizeSongId(songInfo)
+        const name = normalizeSongIdentityText(songInfo?.name || songInfo?.meta?.songName)
+        const singer = normalizeSongIdentityText(songInfo?.singer || songInfo?.meta?.singerName)
+        if (!id && (!name || !singer)) return false
+
+        const dir = getCacheDir(normalizedUsername, true)
+        return indexManager.getAll(normalizedUsername, 'music').some(item => {
+            const itemPath = item.filename ? path.join(dir, item.filename) : ''
+            if (!itemPath || !fs.existsSync(itemPath)) return false
+
+            const sameId = !!id && normalizeSongId(item) === id
+            const sameMetadata = !!name && !!singer &&
+                normalizeSongIdentityText(item.name) === name &&
+                normalizeSongIdentityText(item.singer) === singer
+            return sameId || sameMetadata
+        })
+    } catch (err) {
+        console.warn('[FileCache] Failed to check whether song is already cached:', err)
+        return false
+    }
+}
+
 export const checkLyricCache = (songInfo: any, username?: string) => {
     const id = normalizeSongId(songInfo)
     const normalizedUsername = (username && username !== '_open' && username !== 'default') ? username : '_open'

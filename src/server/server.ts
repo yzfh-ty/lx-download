@@ -2776,7 +2776,8 @@ export const startServer = async (port: number, ip: string) => {
 
   // Download storage is shared globally; sync its single index after settings
   // have been applied.
-  void fileCache.syncCacheIndex('_open', ['music'])
+  const localMusicScanPromise = fileCache.syncCacheIndex('_open', ['music'])
+  serverDownloadQueue.setLocalMusicScanPromise(localMusicScanPromise)
 
   serverDownloadQueue.initialize(async task => {
     const songInfo = normalizeSongInfo(task.songInfo)
@@ -2797,6 +2798,7 @@ export const startServer = async (port: number, ip: string) => {
     musicSdk,
     normalizeSongInfo,
     enqueue: (_username, tasks) => serverDownloadQueue.enqueue('shared', tasks),
+    getCachedSongs: username => fileCache.getCacheList(username),
     getDownloadOptions: (_username) => {
       try {
         const saved = getJson<Record<string, any>>('settings', 'shared', {})

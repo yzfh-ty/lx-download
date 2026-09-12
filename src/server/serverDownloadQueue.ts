@@ -72,6 +72,8 @@ let resolver: DownloadResolver | null = null
 let initialized = false
 let processing = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let localMusicScanReady = true
+const activeSongIdentities = new Set<string>()
 
 const SHARED_SCOPE = 'shared'
 const taskMapKey = (_username: string, id: string) => id
@@ -81,6 +83,19 @@ const normalizeConcurrency = (value: unknown) => {
   const parsed = Number.parseInt(String(value), 10)
   if (!Number.isFinite(parsed)) return DEFAULT_CONCURRENT
   return Math.min(MAX_CONCURRENT, Math.max(1, parsed))
+}
+
+const normalizeTaskText = (value: unknown) => String(value || '')
+  .trim()
+  .toLocaleLowerCase()
+  .replace(/[、，,;；]/g, ',')
+  .replace(/\s+/g, ' ')
+
+const getTaskIdentity = (songInfo: any) => {
+  const name = normalizeTaskText(songInfo?.name || songInfo?.meta?.songName)
+  const singer = normalizeTaskText(songInfo?.singer || songInfo?.meta?.singerName)
+  if (name && singer) return `metadata:${name}:${singer}`
+  return `id:${fileCache.normalizeSongId(songInfo)}`
 }
 
 export const getConcurrency = (_username: string) => concurrency
@@ -184,20 +199,37 @@ const getPublicTask = (task: ServerDownloadTask) => {
 }
 
 const runTask = async (task: ServerDownloadTask) => {
-  if (!resolver || task.status !== 'waiting') return
+  if (!localMusicScanReady || !resolver || task.status !== 'waiting') return
+  const identity = getTaskIdentity(task.songInfo)
+  if (activeSongIdentities.has(identity)) return
+  activeSongIdentities.add(identity)
   const key = taskMapKey(SHARED_SCOPE, task.id)
-  const controller = new AbortController()
-  controllers.set(key, controller)
-  task.status = 'downloading'
-  task.progress = 0
-  task.total = 0
-  task.received = 0
-  task.speed = 0
-  task.errorMsg = ''
-  task.updatedAt = Date.now()
-  scheduleSave()
+  let controller: AbortController | undefined
 
   try {
+    if (fileCache.isSongCached(task.songInfo, SHARED_SCOPE)) {
+      task.status = 'exists'
+      task.progress = 100
+      task.total = 0
+      task.received = 0
+      task.speed = 0
+      task.errorMsg = ''
+      task.updatedAt = Date.now()
+      scheduleSave()
+      return
+    }
+
+    controller = new AbortController()
+    controllers.set(key, controller)
+    task.status = 'downloading'
+    task.progress = 0
+    task.total = 0
+    task.received = 0
+    task.speed = 0
+    task.errorMsg = ''
+    task.updatedAt = Date.now()
+    scheduleSave()
+
     const resolved = await resolver(task)
     if (controller.signal.aborted) return
     if (!resolved?.url) throw new Error('无法解析下载地址')
@@ -237,7 +269,7 @@ const runTask = async (task: ServerDownloadTask) => {
     task.speed = 0
     task.errorMsg = ''
   } catch (err: any) {
-    if (controller.signal.aborted || err?.message === 'Aborted') {
+    if (controller?.signal.aborted || err?.message === 'Aborted') {
       task.status = 'paused'
       task.errorMsg = '已暂停'
     } else {
@@ -247,6 +279,7 @@ const runTask = async (task: ServerDownloadTask) => {
     task.speed = 0
   } finally {
     controllers.delete(key)
+    activeSongIdentities.delete(identity)
     task.updatedAt = Date.now()
     scheduleSave()
     void processQueue()
@@ -254,7 +287,7 @@ const runTask = async (task: ServerDownloadTask) => {
 }
 
 const processQueue = async () => {
-  if (processing || !resolver) return
+  if (processing || !resolver || !localMusicScanReady) return
   processing = true
   try {
     while (true) {
@@ -263,7 +296,7 @@ const processQueue = async () => {
         if (tasks.has(key)) activeCount++
       }
       const next = Array.from(tasks.values()).find(task => (
-        task.status === 'waiting' && activeCount < concurrency
+        task.status === 'waiting' && activeCount < concurrency && !activeSongIdentities.has(getTaskIdentity(task.songInfo))
       ))
       if (!next) break
       void runTask(next)
@@ -271,6 +304,21 @@ const processQueue = async () => {
   } finally {
     processing = false
   }
+}
+
+/**
+ * 下载目录首次扫描完成前禁止启动任何任务，避免索引尚未建立时重复下载。
+ * 扫描失败时保持 waiting，宁可暂停下载也不绕过本地去重保护。
+ */
+export const setLocalMusicScanPromise = (scanPromise: Promise<void>) => {
+  localMusicScanReady = false
+  void Promise.resolve(scanPromise).then(() => {
+    localMusicScanReady = true
+    void processQueue()
+  }).catch(error => {
+    localMusicScanReady = false
+    console.error('[ServerDownloadQueue] Local music scan failed; queue remains waiting:', error?.message || error)
+  })
 }
 
 export const setConcurrency = (_username: string, value: unknown) => {
@@ -296,6 +344,12 @@ export const enqueue = (_username: string, inputs: QueueInput[]) => {
   const added: ServerDownloadTask[] = []
   for (const input of inputs) {
     if (!input?.songInfo) continue
+    const identity = getTaskIdentity(input.songInfo)
+    const hasExistingIdentity = Array.from(tasks.values()).some(task => (
+      getTaskIdentity(task.songInfo) === identity &&
+      ['waiting', 'downloading', 'tagging', 'finished', 'exists'].includes(task.status)
+    ))
+    if (hasExistingIdentity) continue
     const id = sanitizeId(input.id)
     const key = taskMapKey(username, id)
     const quality = input.quality || '320k'

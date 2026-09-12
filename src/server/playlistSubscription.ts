@@ -60,6 +60,7 @@ interface SubscriptionDeps {
   normalizeSongInfo: (songInfo: any) => any
   enqueue: (username: string, tasks: ({ id?: string, songInfo: any, quality?: string } & SubscriptionDownloadOptions)[]) => any[]
   getDownloadOptions?: (username: string) => SubscriptionDownloadOptions
+  getCachedSongs?: (username: string) => Promise<any[]>
 }
 
 const VALID_QUALITIES = new Set(['128k', '192k', '320k', 'flac', 'flac24bit', 'hires'])
@@ -173,6 +174,20 @@ const fetchRemoteSongs = async (sub: PlaylistSubscription): Promise<{ songs: any
 
 const songKey = (songInfo: any) => fileCache.normalizeSongId(songInfo)
 
+const normalizeSongText = (value: unknown) => String(value || '')
+  .trim()
+  .toLocaleLowerCase()
+  .replace(/[、，,;；]/g, ',')
+  .replace(/\s+/g, ' ')
+
+const hasSameSongMetadata = (left: any, right: any) => {
+  const leftName = normalizeSongText(left?.name || left?.meta?.songName)
+  const rightName = normalizeSongText(right?.name || right?.meta?.songName)
+  const leftSinger = normalizeSongText(left?.singer || left?.meta?.singerName)
+  const rightSinger = normalizeSongText(right?.singer || right?.meta?.singerName)
+  return !!leftName && !!leftSinger && leftName === rightName && leftSinger === rightSinger
+}
+
 const sanitizeTaskId = (value: string) => {
   const cleaned = value.replace(/[^A-Za-z0-9_-]/g, '_')
   return cleaned.length > 160 ? cleaned.slice(0, 160) : cleaned
@@ -198,15 +213,31 @@ const diffAndDownload = async (sub: PlaylistSubscription, songs: any[], total: n
   const addedKeys = remoteKeys.filter(key => !knownSet.has(key))
 
   let enqueued = 0
+  let skippedExisting = 0
   // 首次订阅下载当前歌单；后续检测只将新增歌曲加入下载队列。
   if (addedKeys.length > 0 && sub.enabled) {
+    // 订阅可能是在已有本地音乐之后才建立，或者歌单来源返回的 ID 与
+    // 旧文件的 ID 不同（旧文件常被索引为 unknown_歌名 - 歌手）。
+    // 先同步下载目录，再按 ID 或歌名+歌手过滤，避免更新歌单
+    // 时把本地已有歌曲再次加入队列。
+    const cachedSongs = await deps!.getCachedSongs?.(SHARED_SCOPE) || []
+    const downloadableKeys = addedKeys.filter(key => {
+      const songInfo = keyToSong.get(key)
+      const exists = cachedSongs.some(cached => {
+        const cachedSongInfo = cached?.songInfo || cached
+        return songKey(cachedSongInfo) === key || hasSameSongMetadata(cachedSongInfo, songInfo)
+      })
+      if (exists) skippedExisting++
+      return !exists
+    })
+
     // 累计更新包含首次订阅时加入队列的歌曲。
     sub.stats.detected += addedKeys.length
     if (!isBaseline) {
       sub.lastChangedAt = Date.now()
     }
     const downloadOptions = deps!.getDownloadOptions?.(SHARED_SCOPE) || {}
-    const tasks = addedKeys.map(key => {
+    const tasks = downloadableKeys.map(key => {
       const songInfo = keyToSong.get(key)
       return {
         id: sanitizeTaskId(`sub_${sub.id}_${key}`),
@@ -238,7 +269,12 @@ const diffAndDownload = async (sub: PlaylistSubscription, songs: any[], total: n
     sub.knownTotal = total
   }
 
-  return { addedKeys, addedSongs: addedKeys.map(key => keyToSong.get(key)), enqueued }
+  return {
+    addedKeys,
+    addedSongs: addedKeys.map(key => keyToSong.get(key)),
+    enqueued,
+    skippedExisting,
+  }
 }
 
 /** 检测单个订阅（网络失败时保留旧快照，等待下次重试） */
@@ -246,7 +282,7 @@ export const checkSubscription = async (sub: PlaylistSubscription, isManual = fa
   const isBaseline = sub.knownSongIds.length === 0 && sub.knownTotal === 0
   try {
     const { songs, total } = await fetchRemoteSongs(sub)
-    const { addedKeys, addedSongs, enqueued } = await diffAndDownload(sub, songs, total, isBaseline)
+    const { addedKeys, addedSongs, enqueued, skippedExisting } = await diffAndDownload(sub, songs, total, isBaseline)
     sub.lastCheckedAt = Date.now()
     sub.stats.checks += 1
     sub.stats.lastError = ''
@@ -257,6 +293,7 @@ export const checkSubscription = async (sub: PlaylistSubscription, isManual = fa
       isBaseline,
       addedCount: addedKeys.length,
       enqueued,
+      skippedExisting,
       added: addedSongs,
     }
   } catch (err: any) {

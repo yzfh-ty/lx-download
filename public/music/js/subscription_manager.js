@@ -253,9 +253,12 @@
           if (!r) throw new Error('无检测结果')
           if (r.error) throw new Error(r.error)
           if (r.isBaseline) {
-            if (window.showSuccess) showSuccess(`已将当前歌单加入下载队列 ${r.enqueued || 0} 首，之后仅检测新增歌曲`)
+            const skipped = Number(r.skippedExisting || 0)
+            const suffix = skipped > 0 ? `，跳过本地已有 ${skipped} 首` : ''
+            if (window.showSuccess) showSuccess(`已将当前歌单加入下载队列 ${r.enqueued || 0} 首${suffix}，之后仅检测新增歌曲`)
           } else if (r.addedCount > 0) {
-            const msg = `检测到 ${r.addedCount} 首新增歌曲` + (r.enqueued > 0 ? `，已加入下载队列 ${r.enqueued} 首` : '')
+            const skipped = Number(r.skippedExisting || 0)
+            const msg = `检测到 ${r.addedCount} 首新增歌曲` + (r.enqueued > 0 ? `，已加入下载队列 ${r.enqueued} 首` : '') + (skipped > 0 ? `，跳过本地已有 ${skipped} 首` : '')
             if (window.showSuccess) showSuccess(msg)
           } else {
             if (window.showSuccess) showSuccess('歌单暂无更新')
@@ -403,7 +406,9 @@
         if (!r) throw new Error('无检测结果')
         if (r.error) throw new Error(r.error)
         if (r.addedCount > 0) {
-          const msg = `「${r.name}」检测到 ${r.addedCount} 首新增歌曲` + (r.enqueued > 0 ? `，已加入下载队列 ${r.enqueued} 首` : '（自动下载已关闭）')
+          const skipped = Number(r.skippedExisting || 0)
+          const queueMsg = r.enqueued > 0 ? `，已加入下载队列 ${r.enqueued} 首` : (skipped > 0 ? '' : '（自动下载已关闭）')
+          const msg = `「${r.name}」检测到 ${r.addedCount} 首新增歌曲` + queueMsg + (skipped > 0 ? `，跳过本地已有 ${skipped} 首` : '')
           if (window.showSuccess) showSuccess(msg)
         } else {
           if (window.showSuccess) showSuccess('「' + r.name + '」暂无更新')

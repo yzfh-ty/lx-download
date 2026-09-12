@@ -138,6 +138,13 @@ async function main() {
     const items = api.indexManager.getAll('shared', 'music'); assert.equal(items.length, 2);
     assert.equal(new Set(items.map(item => path.basename(item.filename, path.extname(item.filename)))).size, 2);
   });
+  await check('Existing local song is detected across source IDs and qualities', () => {
+    const { api } = fileCacheHarness('song-dedup');
+    const music = api.getCacheDir('shared', true);
+    const item = { id: 'unknown_legacy', songmid: 'unknown_legacy', source: 'unknown', quality: '320k', name: '已有歌曲', singer: '歌手', filename: '已有歌曲 - 歌手.mp3' };
+    fs.writeFileSync(path.join(music, item.filename), 'LOCAL'); api.indexManager.update('shared', item, 'music');
+    assert.equal(api.isSongCached({ id: 'wy_123', source: 'wy', name: '已有歌曲', singer: '歌手', quality: 'flac24bit' }, 'shared'), true);
+  });
   await check('R08 interrupted response rejects, closes writer and resumes exact bytes', async () => {
     const { api } = fileCacheHarness('interrupted');
     await assert.rejects(api.downloadAndCache(song(1), base + '/broken', 'flac', 'shared', undefined, true, false, false, {}, options), /aborted|closed/);
@@ -158,12 +165,12 @@ async function main() {
     fs.writeFileSync(path.join(cache, 'cache.mp3'), 'CACHE'); fs.writeFileSync(path.join(music, 'music.mp3'), 'MUSIC');
     api.clearAllCache('shared'); assert.equal(fs.readFileSync(path.join(music, 'music.mp3'), 'utf8'), 'MUSIC');
   });
-  function subscriptions(fetch, enqueue) {
+  function subscriptions(fetch, enqueue, getCachedSongs) {
     const source = fs.readFileSync(path.join(root, 'src/server/playlistSubscription.ts'), 'utf8').replace(/^import .*$/gm, '').replace(/^export /gm, '');
     const api = evaluate(source, ['initialize', 'subscribe', 'update', 'checkNow', 'list'], {
       fileCache: { normalizeSongId: item => item.id }, getJson: (_n, _k, fallback) => fallback, setJson() {}, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1
     });
-    api.initialize({ musicSdk: { mg: { songList: { getListDetail: fetch } } }, normalizeSongInfo: song => song, enqueue }); return api;
+    api.initialize({ musicSdk: { mg: { songList: { getListDetail: fetch } } }, normalizeSongInfo: song => song, enqueue, getCachedSongs }); return api;
   }
   await check('R04 pause/check/resume queues new songs exactly once', async () => {
     let list = [{ id: 'A' }]; const queued = [];
@@ -172,6 +179,43 @@ async function main() {
     await api.update('shared', sub.id, { enabled: false }); list = [...list, { id: 'B' }];
     await api.checkNow('shared', sub.id); await api.update('shared', sub.id, { enabled: true }); await api.checkNow('shared', sub.id); await api.checkNow('shared', sub.id);
     assert.deepEqual(queued.map(item => item.songInfo.id), ['A', 'B']);
+  });
+  await check('Subscription update skips an existing local song across source IDs and qualities', async () => {
+    let list = [{ id: 'A', name: '已有歌曲', singer: '歌手', quality: 'flac24bit' }]; const queued = [];
+    const api = subscriptions(async () => ({ list, total: list.length }), (_u, tasks) => { queued.push(...tasks); return tasks; }, async () => [{
+      songInfo: { id: 'legacy-file-id', name: '已有歌曲', singer: '歌手' }, quality: '320k'
+    }]);
+    const sub = await api.subscribe('shared', { source: 'mg', sourceListId: 'fixture', quality: 'flac24bit' });
+    assert.deepEqual(queued, []);
+    list = [
+      { id: 'legacy-remote-id', name: '已有歌曲', singer: '歌手', quality: 'flac24bit' },
+      { id: 'B', name: '新增歌曲', singer: '歌手', quality: 'flac24bit' }
+    ];
+    const [result] = await api.checkNow('shared', sub.id);
+    assert.equal(result.skippedExisting, 1); assert.equal(result.enqueued, 1);
+    assert.deepEqual(queued.map(item => item.songInfo.id), ['B']);
+  });
+  await check('Server queue waits for local scan and deduplicates concurrent songs', async () => {
+    const source = fs.readFileSync(path.join(root, 'src/server/serverDownloadQueue.ts'), 'utf8').replace(/^import .*$/gm, '').replace(/^export /gm, '');
+    let releaseScan;
+    const scan = new Promise(resolve => { releaseScan = resolve; });
+    const resolved = [];
+    const api = evaluate(source, ['setLocalMusicScanPromise', 'initialize', 'enqueue', 'list'], {
+      fileCache: {
+        cacheProgress: new Map(), normalizeSongId: item => item.id, isSongCached: () => false,
+        downloadAndCache: async () => {}
+      },
+      getJson: (_n, _k, fallback) => fallback, loadDownloadTasks: () => [], saveDownloadTasks: () => {}, setJson() {}
+    });
+    api.setLocalMusicScanPromise(scan);
+    api.initialize(async task => { resolved.push(task.id); return { url: 'fixture', quality: task.requestedQuality, songInfo: task.songInfo }; });
+    const added = api.enqueue('shared', [
+      { id: 'A', songInfo: { id: 'A', name: '同一首歌', singer: '歌手' }, quality: '320k' },
+      { id: 'B', songInfo: { id: 'B', name: '同一首歌', singer: '歌手' }, quality: 'flac24bit' }
+    ]);
+    assert.equal(added.length, 1); assert.equal(api.list('shared')[0].status, 'waiting'); assert.deepEqual(resolved, []);
+    releaseScan(); await new Promise(resolve => setTimeout(resolve, 30));
+    assert.deepEqual(resolved, ['A']);
   });
   await check('R05 1050 songs fully fetched; incomplete page preserves snapshot', async () => {
     let incomplete = false;
