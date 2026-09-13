@@ -43,6 +43,7 @@ function fileCacheHarness(folder) {
       saveCacheItems: (key, entries) => db.set(key, [...entries].map(([key, value]) => [key, { ...value }]))
     };
     if (name === '@/utils/pathSafety') return safety;
+    if (name === './playlistFileManager') return evaluate(fs.readFileSync(path.join(root, 'src/server/playlistFileManager.ts'), 'utf8'), [], { require: id => id === '@/utils/pathSafety' ? safety : require(id) }).exports;
     if (name === 'music-tag-native') return { MusicTagger: class { loadPath() { throw new Error('Native tags excluded from regression fixtures'); } dispose() {} }, MetaPicture: class {} };
     if (name === '../common/utils/musicMeta') return { setMeta: async () => false };
     if (name === '../utils/lrcTool') return { buildLyrics: () => '', parseLyrics: () => ({}) };
@@ -127,6 +128,22 @@ async function main() {
     assert.equal(api.getReadyDownloadedSongs().length, 2); assert(items.every(item => item.downloadComplete === true));
     const files = items.map(item => fs.readFileSync(path.join(api.getCacheDir('shared', true), item.filename)));
     assert(files.some(buffer => buffer.equals(audio(1)))); assert(files.some(buffer => buffer.equals(audio(2))));
+  });
+  await check('Playlist downloads land directly in the chosen directory with correct index and lyric paths', async () => {
+    const { api } = fileCacheHarness('playlist-target');
+    const targetOptions = { ...options, relativeDirectory: '改名后的歌单' };
+    const filename = await api.downloadAndCache(song(1), base + '/one', 'flac', 'shared', undefined, true, false, false, {}, targetOptions);
+    const music = api.getCacheDir('shared', true);
+    assert(filename.startsWith('改名后的歌单/')); assert(fs.existsSync(path.join(music, filename)));
+    assert(!fs.readdirSync(music).some(file => file.endsWith('.flac')));
+    const item = api.indexManager.getAll('shared', 'music')[0]; assert.equal(item.filename, filename); assert.equal(item.subPath, '改名后的歌单');
+    assert.equal(await api.downloadAndCache(song(1), base + '/one', 'flac', 'shared', undefined, true, false, false, {}, targetOptions), filename);
+    item.lyricFilename = filename.replace(/\.flac$/, '.lrc'); fs.writeFileSync(path.join(music, item.lyricFilename), 'LYRIC');
+    fs.renameSync(path.join(music, '改名后的歌单'), path.join(music, '再次改名'));
+    api.rebaseDownloadedDirectory('改名后的歌单', '再次改名');
+    assert(item.filename.startsWith('再次改名/')); assert(item.lyricFilename.startsWith('再次改名/')); assert.equal(item.subPath, '再次改名');
+    assert(api.isSongCached(song(1), 'shared')); assert(fs.existsSync(path.join(music, item.lyricFilename)));
+    await assert.rejects(api.downloadAndCache(song(2), base + '/two', 'flac', 'shared', undefined, true, false, false, {}, { ...options, relativeDirectory: '../escape' }), /路径/);
   });
   await check('R02 three qualities and long names never overwrite', async () => {
     const { api } = fileCacheHarness('qualities');
@@ -253,6 +270,7 @@ async function main() {
     fs.writeFileSync(path.join(dataPath, 'allowed.txt'), 'ALLOWED');
     const config = { 'player.token': 'synthetic-login-token', 'player.path': '/' };
     let appServer;
+    const navidromeRenames = [];
     const log = { info() {}, warn() {}, error() {} };
     const source = fs.readFileSync(path.join(root, 'src/server/server.ts'), 'utf8') + '\nexport { handleStartServer };';
     const module = evaluate(source, [], {
@@ -265,6 +283,10 @@ async function main() {
         if (name === '@/utils/configLog') return extract('src/utils/configLog.ts', ['formatConfigLogValue']);
         if (name === './fileCache') return api;
         if (name === './serverDownloadQueue') return { list: () => [], setLocalMusicScanPromise() {} };
+        if (name === './playlistSubscription') return {
+          listNavidromePlaylists: () => [{ id: 'nav-fixture', name: '歌单', directoryName: '歌单' }],
+          renameNavidromePlaylist: (id, name) => { navidromeRenames.push({ id, name }); return { id, name, directoryName: name, playlistPath: `${name}/${name}.m3u8` }; }
+        };
         if (name === '@/storage/database') return { getJson: (_n, _k, fallback) => fallback, setJson() {} };
         if (name.startsWith('./') || name.startsWith('@/')) return {};
         return require(name);
@@ -277,6 +299,13 @@ async function main() {
       assert.equal((await login.json()).success, true);
       const cookie = login.headers.get('set-cookie').split(';')[0];
       const headers = { Cookie: cookie + '; unrelated=%', Origin: origin };
+      assert.equal((await fetch(origin + '/api/music/navidrome/playlists', { headers: { Origin: origin } })).status, 401);
+      const navList = await fetch(origin + '/api/music/navidrome/playlists', { headers }); assert.equal(navList.status, 200); assert.equal((await navList.json()).data[0].id, 'nav-fixture');
+      const renameBody = JSON.stringify({ id: 'nav-fixture', name: '自定义名称' });
+      assert.equal((await fetch(origin + '/api/music/navidrome/playlists/rename', { method: 'POST', headers: { Origin: origin }, body: renameBody })).status, 401);
+      assert.equal((await fetch(origin + '/api/music/navidrome/playlists/rename', { method: 'POST', headers: { ...headers, Origin: 'https://cross-site.invalid' }, body: renameBody })).status, 403);
+      const renamed = await fetch(origin + '/api/music/navidrome/playlists/rename', { method: 'POST', headers, body: renameBody }); assert.equal(renamed.status, 200); assert.equal((await renamed.json()).data.playlistPath, '自定义名称/自定义名称.m3u8');
+      assert.deepEqual(navidromeRenames, [{ id: 'nav-fixture', name: '自定义名称' }]);
       assert.equal((await fetch(origin + '/api/user/settings', { headers })).status, 200);
       const oldDownloadDir = api.getDownloadDir();
       const invalid = await fetch(origin + '/api/music/cache/config', { method: 'POST', headers, body: JSON.stringify({ downloadDir: path.join(cwd, 'cache', 'files') }) });

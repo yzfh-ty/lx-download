@@ -14,6 +14,7 @@ import { buildLyrics, parseLyrics } from '../utils/lrcTool'
 import { formatPlayTime } from '../common/utils/common'
 import { loadCacheItems, saveCacheItems } from '@/storage/database'
 import { assertSeparateDirectories } from '@/utils/pathSafety'
+import { safePath } from './playlistFileManager'
 
 export const readLyricFile = (filePath: string) => {
     const data = fs.readFileSync(filePath)
@@ -113,6 +114,7 @@ export interface LyricOptions {
 
 export interface DownloadOptions extends LyricOptions {
     fileNamePattern?: 'name-artist' | 'artist-name' | 'name'
+    relativeDirectory?: string
 }
 
 type LyricData = string | { lyric?: string; lrc?: string; tlyric?: string; rlyric?: string; lxlyric?: string; klyric?: string }
@@ -764,6 +766,31 @@ const sanitize = (str: any) => String(str || '').replace(/[\\/:*?"<>|]/g, '_')
 
 const activeDownloadPaths = new Set<string>()
 export const hasActiveDownloads = () => activeDownloadPaths.size > 0
+
+export const isDownloadDirectoryBusy = (directory: string) => {
+    const dir = safePath(getCacheDir('shared', true), directory)
+    return Array.from(activeDownloadPaths).some(file => file.startsWith(dir + path.sep))
+}
+
+/** Files have already moved; update the music index without an asynchronous rescan. */
+export const rebaseDownloadedDirectory = (oldDirectory: string, newDirectory: string) => {
+    const root = getCacheDir('shared', true)
+    safePath(root, oldDirectory)
+    safePath(root, newDirectory)
+    for (const item of indexManager.getAll('shared', 'music')) {
+        if (!item.filename.startsWith(oldDirectory + '/')) continue
+        const oldFilename = item.filename
+        item.filename = newDirectory + item.filename.slice(oldDirectory.length)
+        item.subPath = path.posix.dirname(item.filename)
+        if (item.lyricFilename?.startsWith(oldDirectory + '/')) item.lyricFilename = newDirectory + item.lyricFilename.slice(oldDirectory.length)
+        try {
+            const stats = fs.statSync(safePath(root, item.filename))
+            const cover = readCoverCache(oldFilename, 'shared', stats)
+            if (cover) writeCoverCache(item.filename, 'shared', cover.data, cover.mime, stats)
+        } catch { /* Embedded/remote covers remain available if a sidecar cache cannot be copied. */ }
+    }
+    indexManager.save('shared', 'music')
+}
 const reservedDownloadNames = new Set<string>()
 const allocateDownloadTempPath = (dir: string, songKey: string, pattern: string) => {
     const key = crypto.createHash('sha256').update(`${songKey}\0${pattern}`).digest('hex')
@@ -2017,7 +2044,11 @@ const ensureCachedLyrics = async (
 
 export const downloadAndCache = async (songInfo: any, url: string, quality?: string, username?: string, signal?: AbortSignal, isOnlyDownload?: boolean, shouldCacheLyric: boolean = true, shouldEmbedLyric: boolean = true, provenance: DownloadProvenance = {}, lyricOptions: DownloadOptions = {}) => {
     if (lyricOptions.fileNamePattern) songInfo = { ...songInfo, __fileNamePattern: lyricOptions.fileNamePattern }
-    const dir = ensureDir(username, isOnlyDownload)
+    const rootDir = ensureDir(username, isOnlyDownload)
+    if (lyricOptions.relativeDirectory && !isOnlyDownload) throw new Error('只有下载任务可以指定歌单目录')
+    const dir = lyricOptions.relativeDirectory ? safePath(rootDir, lyricOptions.relativeDirectory) : rootDir
+    fs.mkdirSync(dir, { recursive: true })
+    const relativeFilename = (filename: string) => path.relative(rootDir, filename).replace(/\\/g, '/')
     const baseName = getFileName(songInfo, quality, isOnlyDownload, username)
     const songKey = normalizeSongId(songInfo) + '_' + (quality || 'unknown')
     const requestedSource = provenance.requestedSource || songInfo.requestedSource || songInfo.source || 'unknown'
@@ -2074,7 +2105,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
             let coverType: CacheItem['coverType'] = hasCover ? 'embedded' : 'none'
             if (!hasCover) {
                 const sourceCover = await getCacheCover(result.filename, normalizedUsername)
-                if (sourceCover?.data?.length && writeCoverCache(path.basename(finalPath), normalizedUsername, sourceCover.data, sourceCover.mime, stat)) {
+                if (sourceCover?.data?.length && writeCoverCache(relativeFilename(finalPath), normalizedUsername, sourceCover.data, sourceCover.mime, stat)) {
                     hasCover = true
                     coverType = 'cached'
                 } else if (hasUsableRemoteCover(metadata.img)) {
@@ -2088,7 +2119,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
             if (shouldCacheLyric && fs.existsSync(sourceLyricPath)) {
                 const targetLyricPath = path.join(dir, finalBaseName + '.lrc')
                 fs.copyFileSync(sourceLyricPath, targetLyricPath)
-                lyricFilename = path.basename(targetLyricPath)
+                lyricFilename = relativeFilename(targetLyricPath)
             }
 
             indexManager.update(normalizedUsername, {
@@ -2096,7 +2127,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                 album: metadata.album, albumId: metadata.albumId, img: metadata.img,
                 interval: metadata.interval, source: metadata.source, requestedSource,
                 downloadSource: actualDownloadSource, sourceName: actualSourceName,
-                quality: actualQuality, filename: path.basename(finalPath),
+                quality: actualQuality, filename: relativeFilename(finalPath), subPath: lyricOptions.relativeDirectory,
                 folder: 'music', mtime: Date.now(), size: stat.size,
                 lyricFilename,
                 ext: ext.replace('.', ''),
@@ -2117,7 +2148,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
             console.log(`[FileCache] Copied cached song to music folder: ${path.basename(finalPath)}`)
             cacheProgress.set(songKey, { progress: 100, status: 'finished', total: stat.size, received: stat.size })
             setTimeout(() => cacheProgress.delete(songKey), 30000)
-            return path.basename(finalPath)
+            return relativeFilename(finalPath)
         }
 
         console.log(`[FileCache] Song already exists in ${result.folder}, skipping download: ${result.filename}`)
@@ -2381,7 +2412,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                         album: metadata.album, albumId: metadata.albumId, img: metadata.img,
                         interval: metadata.interval, source: metadata.source, requestedSource,
                         downloadSource, sourceName,
-                        quality: actualQuality, filename: finalBaseName + ext,
+                        quality: actualQuality, filename: relativeFilename(finalPath), subPath: lyricOptions.relativeDirectory,
                         folder: folderType, mtime: Date.now(), size: received,
                         ext: ext.replace('.', ''), hasCover: false, hasLyric: false,
                         audioContainer: inspection.audioContainer,
@@ -2412,7 +2443,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                     const taggedStats = fs.statSync(finalPath)
                     let finalHasCover = readEmbeddedCoverState(finalPath)
                     if (!finalHasCover && imageBuffer?.length) {
-                        finalHasCover = writeCoverCache(finalBaseName + ext, normalizedUsername, imageBuffer, imageMime, taggedStats)
+                        finalHasCover = writeCoverCache(relativeFilename(finalPath), normalizedUsername, imageBuffer, imageMime, taggedStats)
                     }
                     const taggedItem = indexManager.get(normalizedUsername, id, folderType, actualQuality)
                     if (taggedItem) {
@@ -2436,13 +2467,13 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                     }
 
                     await ensureCachedLyrics(songInfo, actualQuality, username, isOnlyDownload, finalPath, folderType, shouldCacheLyric, shouldEmbedLyric, lyricOptions)
-                    const completedItem = indexManager.getAll(normalizedUsername, folderType).find(item => item.filename === finalBaseName + ext)
+                    const completedItem = indexManager.getAll(normalizedUsername, folderType).find(item => item.filename === relativeFilename(finalPath))
                     if (completedItem) { completedItem.downloadComplete = true; indexManager.save(normalizedUsername, folderType) }
 
                     cacheProgress.set(songKey, { progress: 100, status: 'finished', total: total || received, received, speed: 0, updatedAt: Date.now() })
                     setTimeout(() => cacheProgress.delete(songKey), 30000)
                     settle(() => {
-                        resolve(finalBaseName + ext)
+                        resolve(relativeFilename(finalPath))
                         if (!isOnlyDownload) void checkAndCleanupCache(username)
                     })
                 }).catch(fail)

@@ -1226,6 +1226,38 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
       }
 
       // ===== 歌单订阅（定时拉取远端歌单，自动对比新增并入队下载） =====
+      if (pathname === '/api/music/navidrome/playlists' && req.method === 'GET') {
+        if (!getCacheRequestUsername(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: 'Unauthorized' }))
+          return
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify({ success: true, data: playlistSubscription.listNavidromePlaylists() }))
+        return
+      }
+
+      if (pathname === '/api/music/navidrome/playlists/rename' && req.method === 'POST') {
+        if (!getCacheRequestUsername(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: 'Unauthorized' }))
+          return
+        }
+        await readBody(req).then(body => {
+          try {
+            const { id, name } = JSON.parse(body)
+            if (!id) throw new Error('缺少歌单 ID')
+            const playlist = playlistSubscription.renameNavidromePlaylist(String(id), name)
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: true, data: playlist }))
+          } catch (err: any) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, message: err?.message || '歌单改名失败' }))
+          }
+        })
+        return
+      }
+
       if (pathname === '/api/music/subscriptions' && req.method === 'GET') {
         const username = getCacheRequestUsername(req)
         if (!username) {
@@ -2816,6 +2848,11 @@ export const startServer = async (port: number, ip: string) => {
     getDownloadRoot: () => fileCache.getCacheDir('shared', true),
     getReadySongs: () => [...fileCache.getReadyDownloadedSongs(), ...serverDownloadQueue.getCompletedSongs()],
     initialScan: localMusicScanPromise,
+    isDirectoryBusy: directory => serverDownloadQueue.isDirectoryBusy(directory) || fileCache.isDownloadDirectoryBusy(directory),
+    onDirectoryRenamed: (oldDirectory, newDirectory) => {
+      fileCache.rebaseDownloadedDirectory(oldDirectory, newDirectory)
+      serverDownloadQueue.rebaseDirectory(oldDirectory, newDirectory)
+    },
     getDownloadOptions: (_username) => {
       try {
         const saved = getJson<Record<string, any>>('settings', 'shared', {})
@@ -2846,6 +2883,7 @@ export const startServer = async (port: number, ip: string) => {
   })
 
   serverDownloadQueue.setCompletionListener(() => playlistSubscription.scheduleReconcile())
+  serverDownloadQueue.setDirectoryResolver(songInfo => playlistSubscription.getDownloadDirectory(songInfo))
 
   remasterQueue.initialize(async (songInfo, requestedQuality, username) => {
     const apiUsername = username === '_open' ? 'open' : username

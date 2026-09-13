@@ -399,7 +399,7 @@
           <p class="text-xs t-text-muted mb-4">订阅歌单或排行榜后，服务端自动下载歌曲并在下载目录下生成同名目录和 M3U8，无需保持浏览器开启。将下载目录挂载到 Navidrome 音乐库并启用歌单自动导入，即可在扫描后更新歌单。远端移除歌曲或取消订阅时，已下载文件仍会保留。</p>
           ${this.unmatchedPlaylist ? `
             <div class="rounded-xl border t-border-main p-3 space-y-2">
-              <div class="text-sm font-bold t-text-main">未匹配 <span class="text-xs font-normal t-text-muted">自动维护 · ${Number(this.unmatchedPlaylist.playlistTrackCount || 0)} 首</span></div>
+              <div class="text-sm font-bold t-text-main">${this._escape(this.unmatchedPlaylist.name || '未匹配')} <span class="text-xs font-normal t-text-muted">自动维护 · ${Number(this.unmatchedPlaylist.playlistTrackCount || 0)} 首</span></div>
               <p class="text-xs t-text-muted">收录未匹配任何订阅（包含暂停订阅）的本地歌曲，直接引用原文件；匹配后自动移出此歌单，音频文件保留。</p>
               <div class="text-xs t-text-muted break-all">歌单文件：${this._escape(this.unmatchedPlaylist.playlistPath || '等待本地扫描')}（相对于下载目录）</div>
               <div class="text-xs ${this.unmatchedPlaylist.playlistLastError ? 'text-red-500' : 't-text-muted'}">${this.unmatchedPlaylist.playlistLastError

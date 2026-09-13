@@ -6,6 +6,7 @@ import { isPathWithin } from '@/utils/pathSafety'
 export interface PlaylistFiles {
   id: string
   name: string
+  playlistName?: string
   directoryName?: string
   playlistFilename?: string
 }
@@ -57,6 +58,25 @@ export const sanitizePlaylistName = (name: string, fallback = '歌单') => {
   return clean
 }
 
+/** Keep the suffix intact even when a title must be shortened for the filesystem. */
+export const appendPlaylistSuffix = (name: string, suffix: string) => {
+  const title = Array.from(sanitizePlaylistName(name))
+  while (title.length && ((title.join('') + suffix).length > 64 || Buffer.byteLength(title.join('') + suffix, 'utf8') > 140)) title.pop()
+  return title.join('') + suffix
+}
+
+export const availablePlaylistName = (root: string, name: string, id: string, reserved: string[] = [], current?: string) => {
+  const base = sanitizePlaylistName(name)
+  let candidate = base
+  let count = 0
+  while (reserved.some(value => value.toLowerCase() === candidate.toLowerCase()) || (candidate !== current && fs.existsSync(safePath(root, candidate)))) {
+    const platformSuffix = base.match(/（[^（）]+）$/)?.[0] || ''
+    const title = platformSuffix ? base.slice(0, -platformSuffix.length) : base
+    candidate = appendPlaylistSuffix(title, ` (${id}${count++ ? '-' + count : ''})${platformSuffix}`)
+  }
+  return candidate
+}
+
 export const safePath = (root: string, relative: string) => {
   if (!relative || path.isAbsolute(relative) || /^[A-Za-z]:/.test(relative) || relative.split(/[\\/]/).some(part => part === '..' || part.includes(':')) || /[\r\n\x00]/.test(relative)) throw new Error('无效的歌单文件路径')
   const target = path.resolve(root, relative)
@@ -84,12 +104,8 @@ export const ensurePlaylistDirectory = (root: string, files: PlaylistFiles, rese
   fs.mkdirSync(root, { recursive: true })
   fs.accessSync(root, fs.constants.W_OK)
   if (!files.directoryName) {
-    const base = sanitizePlaylistName(files.name, `歌单-${files.id}`)
-    let candidate = base
-    let count = 0
-    while (reserved.some(name => name.toLowerCase() === candidate.toLowerCase()) || fs.existsSync(safePath(root, candidate))) {
-      candidate = `${base} (${files.id}${count++ ? '-' + count : ''})`
-    }
+    const base = sanitizePlaylistName(files.playlistName || files.name, `歌单-${files.id}`)
+    const candidate = availablePlaylistName(root, base, files.id, reserved)
     files.directoryName = candidate
     files.playlistFilename = candidate + '.m3u8'
   }

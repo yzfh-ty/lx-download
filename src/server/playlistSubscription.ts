@@ -34,6 +34,9 @@ export interface PlaylistSubscription {
   initialDownloadCompleted: boolean
   stats: SubscriptionStats
   directoryName?: string
+  playlistName?: string
+  playlistNameCustomized?: boolean
+  playlistNameSource?: string
   playlistFilename?: string
   remoteTracks?: Array<{ key: string, songInfo: any, localRelativePath?: string }>
   playlistUpdatedAt?: number
@@ -48,7 +51,7 @@ interface SubscriptionState {
   version: number
   intervalMinutes: number
   subscriptions: PlaylistSubscription[]
-  unmatchedPlaylist?: playlistFiles.PlaylistFiles & { playlistUpdatedAt?: number, playlistLastError?: string, playlistTrackCount?: number }
+  unmatchedPlaylist?: playlistFiles.PlaylistFiles & { nameCustomized?: boolean, playlistUpdatedAt?: number, playlistLastError?: string, playlistTrackCount?: number }
 }
 
 type SubscriptionDownloadOptions = {
@@ -76,6 +79,8 @@ interface SubscriptionDeps {
   getDownloadRoot?: () => string
   getReadySongs?: () => any[]
   initialScan?: Promise<void>
+  isDirectoryBusy?: (directory: string) => boolean
+  onDirectoryRenamed?: (oldDirectory: string, newDirectory: string) => void
 }
 
 const VALID_QUALITIES = new Set(['128k', '192k', '320k', 'flac', 'flac24bit', 'hires'])
@@ -104,16 +109,57 @@ export const scheduleReconcile = () => {
 
 const UNMATCHED_ID = 'local-unmatched'
 const UNMATCHED_NAME = '未匹配'
+const PLATFORM_NAMES: Record<string, string> = { wy: '网易云', tx: 'QQ音乐', kg: '酷狗', kw: '酷我', mg: '咪咕' }
+const generatedPlaylistName = (sub: PlaylistSubscription) => {
+  const platform = PLATFORM_NAMES[sub.source] || playlistFiles.sanitizePlaylistName(sub.source).slice(0, 16)
+  const suffix = `（${platform}）`
+  const title = sub.name.endsWith(suffix) ? sub.name.slice(0, -suffix.length) : sub.name
+  return playlistFiles.appendPlaylistSuffix(title, suffix)
+}
 const reservedDirectories = (id: string) => [
   ...state.subscriptions.filter(s => s.id !== id).map(s => s.directoryName || ''),
   state.unmatchedPlaylist?.directoryName || UNMATCHED_NAME,
 ]
 
+const rebaseSubscriptionPaths = (sub: PlaylistSubscription, oldDirectory: string) => {
+  for (const track of sub.remoteTracks || []) {
+    if (track.localRelativePath?.startsWith(oldDirectory + '/')) track.localRelativePath = sub.directoryName + track.localRelativePath.slice(oldDirectory.length)
+  }
+  for (const [key, relative] of Object.entries(sub.localFiles || {})) {
+    if (relative.startsWith(oldDirectory + '/')) sub.localFiles![key] = sub.directoryName + relative.slice(oldDirectory.length)
+  }
+  if (oldDirectory !== sub.directoryName) deps?.onDirectoryRenamed?.(oldDirectory, sub.directoryName!)
+}
+
+const ensureSubscriptionDirectory = (root: string, sub: PlaylistSubscription) => {
+  // Before this version playlistName was only stored after a user rename.
+  sub.playlistNameCustomized ??= !!sub.playlistName
+  const reserved = reservedDirectories(sub.id)
+  if (!sub.playlistNameCustomized) {
+    if (!sub.directoryName) sub.playlistName = generatedPlaylistName(sub)
+    else if (sub.playlistNameSource !== sub.source && !deps?.isDirectoryBusy?.(sub.directoryName) && state.subscriptions.includes(sub)) {
+      const oldDirectory = sub.directoryName
+      const name = playlistFiles.availablePlaylistName(root, generatedPlaylistName(sub), sub.id, reserved, oldDirectory)
+      playlistFiles.renamePlaylistDirectory(root, sub, name, reserved)
+      rebaseSubscriptionPaths(sub, oldDirectory)
+      sub.playlistNameSource = sub.source
+      sub.playlistName = sub.directoryName
+    }
+  }
+  const wasMissing = !sub.directoryName
+  playlistFiles.ensurePlaylistDirectory(root, sub, reserved)
+  if (wasMissing && !sub.playlistNameCustomized) {
+    sub.playlistNameSource = sub.source
+    sub.playlistName = sub.directoryName
+  }
+}
+
 export const getUnmatchedPlaylist = () => {
   const files = state.unmatchedPlaylist
   return {
     id: UNMATCHED_ID,
-    name: UNMATCHED_NAME,
+    name: files?.name || UNMATCHED_NAME,
+    directoryName: files?.directoryName || '',
     playlistPath: files?.directoryName ? `${files.directoryName}/${files.playlistFilename}` : '',
     playlistTrackCount: files?.playlistTrackCount || 0,
     playlistUpdatedAt: files?.playlistUpdatedAt || 0,
@@ -127,10 +173,11 @@ const syncUnmatchedPlaylist = (cachedSongs = deps?.getReadySongs?.() || []) => {
   try {
     const root = deps.getDownloadRoot()
     const reserved = state.subscriptions.map(sub => sub.directoryName || '')
-    if (files.directoryName && files.name !== UNMATCHED_NAME) {
+    if (files.directoryName && !files.nameCustomized && files.name === '本地未匹配') {
       playlistFiles.renamePlaylistDirectory(root, files, UNMATCHED_NAME, reserved)
+      files.name = UNMATCHED_NAME
     }
-    files.name = UNMATCHED_NAME
+    files.name ||= UNMATCHED_NAME
     playlistFiles.ensurePlaylistDirectory(root, files, reserved)
     const groups: Array<{ keys: string[], filename?: string, matched?: boolean }> = []
     const pathKey = (filename: string) => `path:${filename.replace(/\\/g, '/')}`
@@ -186,7 +233,7 @@ const syncPlaylist = (sub: PlaylistSubscription, cachedSongs = deps?.getReadySon
       sub.playlistTrackCount = 0
       sub.localFiles = {}
     }
-    playlistFiles.ensurePlaylistDirectory(root, sub, reservedDirectories(sub.id))
+    ensureSubscriptionDirectory(root, sub)
     sub.playlistRoot = root
     sub.localFiles ||= {}
     const paths: string[] = []
@@ -249,16 +296,61 @@ export const rebuildPlaylist = (_username: string, id: string) => {
   return publicView(sub)
 }
 
-const renameFiles = (sub: PlaylistSubscription, name: string) => {
-  if (!deps?.getDownloadRoot || !sub.directoryName || name === sub.name) return
+const renameFiles = (sub: PlaylistSubscription, name: string, force = false) => {
+  if (!deps?.getDownloadRoot || (!force && name === sub.name)) return
+  playlistFiles.ensurePlaylistDirectory(deps.getDownloadRoot(), sub, reservedDirectories(sub.id))
+  if (deps.isDirectoryBusy?.(sub.directoryName!)) throw new Error('该歌单正在下载或写入标签，请等待当前任务完成后再改名')
   const oldDirectory = sub.directoryName
   playlistFiles.renamePlaylistDirectory(deps.getDownloadRoot(), sub, name, reservedDirectories(sub.id))
-  for (const track of sub.remoteTracks || []) {
-    if (track.localRelativePath?.startsWith(oldDirectory + '/')) track.localRelativePath = sub.directoryName + track.localRelativePath.slice(oldDirectory.length)
+  rebaseSubscriptionPaths(sub, oldDirectory!)
+  sub.playlistName = sub.directoryName
+  sub.playlistNameCustomized = true
+}
+
+export const listNavidromePlaylists = () => [
+  { ...getUnmatchedPlaylist(), kind: 'unmatched', subscriptionName: '' },
+  ...state.subscriptions.map(sub => ({
+    id: sub.id, kind: sub.kind, name: sub.playlistName || sub.directoryName || sub.name,
+    subscriptionName: sub.name, directoryName: sub.directoryName || '',
+    playlistPath: sub.directoryName ? `${sub.directoryName}/${sub.playlistFilename}` : '',
+    playlistTrackCount: sub.playlistTrackCount || 0, playlistLastError: sub.playlistLastError || '',
+    playlistUpdatedAt: sub.playlistUpdatedAt || 0,
+  })),
+]
+
+export const renameNavidromePlaylist = (id: string, value: unknown) => {
+  if (!deps?.getDownloadRoot || !initialScanReady) throw new Error('请等待本地音乐首次扫描完成')
+  const name = String(value || '').trim()
+  if (!name || playlistFiles.sanitizePlaylistName(name) !== name) throw new Error('名称不能为空，不能包含路径分隔符、非法字符或系统保留名称，且长度不能超过 64 个字符')
+  if (id === UNMATCHED_ID) {
+    const files = state.unmatchedPlaylist ||= { id: UNMATCHED_ID, name: UNMATCHED_NAME }
+    if (files.directoryName && deps.isDirectoryBusy?.(files.directoryName)) throw new Error('该目录正在写入，请稍后再改名')
+    const oldDirectory = files.directoryName
+    playlistFiles.renamePlaylistDirectory(deps.getDownloadRoot(), files, name, state.subscriptions.map(sub => sub.directoryName || ''))
+    files.name = name
+    files.nameCustomized = true
+    if (oldDirectory && oldDirectory !== files.directoryName) deps.onDirectoryRenamed?.(oldDirectory, files.directoryName!)
+    syncUnmatchedPlaylist()
+  } else {
+    const sub = findSub(SHARED_SCOPE, id)
+    if (!sub) throw new Error('歌单不存在')
+    if (busy.has(id)) throw new Error('该订阅正在更新，请稍后再改名')
+    renameFiles(sub, name, true)
+    syncPlaylist(sub)
+    syncUnmatchedPlaylist()
   }
-  for (const [key, relative] of Object.entries(sub.localFiles || {})) {
-    if (relative.startsWith(oldDirectory + '/')) sub.localFiles![key] = sub.directoryName + relative.slice(oldDirectory.length)
-  }
+  saveNow()
+  return listNavidromePlaylists().find(playlist => playlist.id === id)!
+}
+
+/** Resolve at execution time so waiting/resumed tasks follow the current persisted directory. */
+export const getDownloadDirectory = (songInfo: any) => {
+  const key = songKey(songInfo)
+  const sub = state.subscriptions.find(item => item.remoteTracks?.some(track => track.key === key || hasSameSongMetadata(track.songInfo, songInfo)))
+  if (!sub || !deps?.getDownloadRoot) return undefined
+  ensureSubscriptionDirectory(deps.getDownloadRoot(), sub)
+  saveNow()
+  return sub.directoryName
 }
 
 const saveNow = () => {
@@ -338,6 +430,7 @@ const publicView = (sub: PlaylistSubscription) => {
     knownTotal: sub.knownTotal,
     stats: sub.stats,
     directoryName: sub.directoryName || '',
+    playlistName: sub.playlistName || sub.directoryName || sub.name,
     playlistPath: sub.directoryName ? `${sub.directoryName}/${sub.playlistFilename}` : '',
     playlistUpdatedAt: sub.playlistUpdatedAt || 0,
     playlistLastError: sub.playlistLastError || '',
@@ -726,7 +819,7 @@ export const update = async (_username: string, id: string, patch: {
       if (state.subscriptions.some(item => item.id !== id && item.kind === nextKind && item.source === nextSource && item.sourceListId === nextSourceListId)) throw new Error('该歌单已存在订阅')
       if (patch.name === undefined && info) nextSub.name = String(info.name || info.title || nextSub.name).slice(0, 120)
       if (info) nextSub.cover = String(info.img || info.pic || info.cover || nextSub.cover)
-      // Change the remote source in place. Renaming only is an independent operation.
+      // Commit the new source before migrating an automatic platform-qualified directory.
       if (nextSub.enabled) await diffAndDownload(nextSub, songs, total, true)
       nextSub.lastCheckedAt = Date.now()
       nextSub.stats.checks += 1

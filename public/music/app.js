@@ -285,7 +285,7 @@ function normalizeStoredSettings(nextSettings) {
         nextSettings.downloadFileNamePattern = DEFAULT_SETTINGS.downloadFileNamePattern;
     }
     const validDefaultEntries = [
-        'search', 'songlist', 'leaderboard', 'localmusic', 'my-playlists', 'subscriptions', 'source-management', 'downloads',
+        'search', 'songlist', 'leaderboard', 'localmusic', 'my-playlists', 'subscriptions', 'navidrome', 'source-management', 'downloads',
         'settings-system', 'settings-display', 'settings-logs'
     ];
     if (!validDefaultEntries.includes(nextSettings.defaultEntry)) {
@@ -299,7 +299,7 @@ let settingsReady = false;
 let routeInitialized = false;
 let lastHandledRouteHash = null;
 const navigableTabs = new Set([
-    'search', 'songlist', 'leaderboard', 'my-playlists', 'subscriptions', 'source-management', 'localmusic', 'downloads',
+    'search', 'songlist', 'leaderboard', 'my-playlists', 'subscriptions', 'navidrome', 'source-management', 'localmusic', 'downloads',
     'settings-system', 'settings-display', 'settings-logs'
 ]);
 
@@ -309,6 +309,7 @@ const tabRoutes = {
     leaderboard: '#/leaderboard',
     'my-playlists': '#/my-playlists',
     subscriptions: '#/subscriptions',
+    navidrome: '#/navidrome',
     'source-management': '#/source-management',
     localmusic: '#/localmusic',
     downloads: '#/downloads',
@@ -960,7 +961,7 @@ function parseRoute() {
     const path = (location.hash || '').replace(/^#\/?/, '');
     const parts = path.split('/').filter(Boolean);
 
-    if (parts[0] === 'subscriptions' || parts[0] === 'source-management') {
+    if (parts[0] === 'subscriptions' || parts[0] === 'source-management' || parts[0] === 'navidrome') {
         return { type: 'tab', tab: parts[0] };
     }
 
@@ -1193,6 +1194,11 @@ function switchTab(tabId, options = {}) {
         if (window.SubscriptionManager?.renderSettingsPanel) {
             void window.SubscriptionManager.renderSettingsPanel();
         }
+    }
+
+    if (tabId === 'navidrome') {
+        document.getElementById('page-title').innerText = 'Navidrome 设置';
+        void window.NavidromeManager?.load();
     }
 
     if (tabId === 'source-management') {

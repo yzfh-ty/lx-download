@@ -11,6 +11,7 @@ export interface ServerDownloadTask {
   originalSongInfo?: any
   finalRelativePath?: string
   downloadRoot?: string
+  targetDirectory?: string
   quality: string
   requestedQuality: string
   status: ServerDownloadStatus
@@ -77,6 +78,18 @@ let processing = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let localMusicScanReady = true
 let onCompleted: (() => void) | undefined
+let directoryResolver: ((songInfo: any) => string | undefined) | undefined
+export const setDirectoryResolver = (resolve: (songInfo: any) => string | undefined) => { directoryResolver = resolve }
+export const isDirectoryBusy = (directory: string) => Array.from(tasks.values()).some(task =>
+  controllers.has(task.id) && task.targetDirectory === directory)
+export const rebaseDirectory = (oldDirectory: string, newDirectory: string) => {
+  for (const task of tasks.values()) {
+    if (task.downloadRoot !== fileCache.getCacheDir('shared', true)) continue
+    if (task.finalRelativePath?.startsWith(oldDirectory + '/')) task.finalRelativePath = newDirectory + task.finalRelativePath.slice(oldDirectory.length)
+    if (task.targetDirectory === oldDirectory) task.targetDirectory = newDirectory
+  }
+  saveNow()
+}
 export const setCompletionListener = (listener: () => void) => { onCompleted = listener }
 const notifyCompleted = () => {
   try { onCompleted?.() } catch (err: any) { console.warn('[PlaylistSync] Completion callback failed:', err?.message) }
@@ -222,6 +235,7 @@ const runTask = async (task: ServerDownloadTask) => {
 
   try {
     task.originalSongInfo ||= task.songInfo
+    task.targetDirectory = undefined
     task.downloadRoot = fileCache.getCacheDir?.('shared', true)
     if (fileCache.isSongCached(task.songInfo, SHARED_SCOPE)) {
       task.status = 'exists'
@@ -257,12 +271,14 @@ const runTask = async (task: ServerDownloadTask) => {
     task.updatedAt = Date.now()
     scheduleSave()
 
+    task.targetDirectory = directoryResolver?.(task.originalSongInfo || task.songInfo)
     const finalRelativePath = await fileCache.downloadAndCache(task.songInfo, resolved.url, task.quality, SHARED_SCOPE, controller.signal,
       true, task.cacheLyric, task.embedLyric, {
         requestedSource: resolved.requestedSource,
         downloadSource: resolved.downloadSource,
         sourceName: resolved.sourceName,
       }, {
+        relativeDirectory: task.targetDirectory,
         fileNamePattern: task.fileNamePattern,
         embedMetadata: task.embedMetadata,
         embedCover: task.embedCover,

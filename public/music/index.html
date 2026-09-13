@@ -122,6 +122,14 @@
                     <li class="sidebar-section-label px-6 pt-5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] t-text-muted opacity-60"
                         aria-hidden="true">管理</li>
                     <li>
+                        <a href="#/navidrome" id="tab-navidrome"
+                            class="sidebar-nav-link flex items-center px-6 py-3 t-text-muted hover:t-bg-main transition-colors duration-200"
+                            aria-label="Navidrome 设置" title="Navidrome 设置">
+                            <i class="fas fa-sliders-h w-6 text-center" aria-hidden="true"></i>
+                            <span class="ml-3 font-medium">Navidrome 设置</span>
+                        </a>
+                    </li>
+                    <li>
                         <a href="#/source-management" id="tab-source-management"
                             class="sidebar-nav-link flex items-center px-6 py-3 t-text-muted hover:t-bg-main transition-colors duration-200"
                             aria-label="音源管理" title="音源管理">
@@ -730,6 +738,18 @@
                         </div>
                     </div>
                     <div id="subscription-page" class="w-full"></div>
+                </div>
+
+                <!-- Navidrome Settings View -->
+                <div id="view-navidrome"
+                    class="absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar px-2 pt-2 pb-6 md:px-6 md:pt-6 hidden opacity-0 transition-all duration-300">
+                    <div class="page-heading mb-4 md:mb-6 px-1">
+                        <h2 class="text-xl md:text-2xl font-black t-text-main flex items-center gap-2">
+                            <i class="fas fa-sliders-h text-emerald-500" aria-hidden="true"></i>Navidrome 设置
+                        </h2>
+                        <p class="text-sm t-text-muted mt-2">管理自动创建的歌单名称和保存目录。</p>
+                    </div>
+                    <div id="navidrome-page" class="w-full"></div>
                 </div>
 
                 <!-- Source Management View -->
@@ -1558,6 +1578,7 @@
                                                 <option value="leaderboard">排行榜</option>
                                                 <option value="localmusic">本地音乐</option>
                                                 <option value="subscriptions">订阅歌单</option>
+                                                <option value="navidrome">Navidrome 设置</option>
                                                 <option value="source-management">音源管理</option>
                                             </select>
                                         </div>
@@ -2030,8 +2051,9 @@
     <script src="js/download_manager.js?v=20260911-1"></script>
     <script src="js/local_music.js?v=20260912-2"></script>
     <script src="js/common_ui.js"></script>
-    <script src="js/subscription_manager.js?v=20260912-1"></script>
-    <script src="app.js?v=20260912-1"></script>
+    <script src="js/subscription_manager.js?v=20260912-2"></script>
+    <script src="js/navidrome_manager.js?v=20260912-1"></script>
+    <script src="app.js?v=20260912-2"></script>
 </body>
 
 </html>

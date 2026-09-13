@@ -67,6 +67,101 @@ function harness(label, database = new Map(), folder, initialScan) {
 }
 async function check(name, fn) { await fn(); passed++; console.log(`PASS ${name}`); }
 (async () => {
+  await check('automatic playlists and leaderboards include their platform without cross-platform collisions', async () => {
+    const h = harness('platform-names'); h.add('A');
+    const platforms = { wy: '网易云', tx: 'QQ音乐', kg: '酷狗', kw: '酷我', mg: '咪咕' };
+    const directories = new Set();
+    for (const [source, platform] of Object.entries(platforms)) {
+      h.deps.musicSdk[source] = h.deps.musicSdk.wy;
+      for (const kind of ['playlist', 'leaderboard']) {
+        const sub = await h.api.subscribe('shared', { source, kind, sourceListId: 'same', name: '每日推荐' });
+        assert(sub.directoryName.includes(`（${platform}）`));
+        assert.equal(sub.playlistPath, `${sub.directoryName}/${sub.directoryName}.m3u8`);
+        assert(!directories.has(sub.directoryName)); directories.add(sub.directoryName);
+      }
+    }
+    assert.equal(h.api.listNavidromePlaylists().find(item => item.kind === 'playlist').name, '每日推荐（网易云）');
+    assert.equal(h.api.getUnmatchedPlaylist().name, '未匹配');
+  });
+  await check('long and duplicate automatic names retain the platform suffix within filesystem limits', async () => {
+    const h = harness('platform-long');
+    for (const id of ['first', 'second']) {
+      const sub = await h.subscribe('😀'.repeat(150), id);
+      assert(sub.directoryName.endsWith('（网易云）')); assert(sub.directoryName.length <= 64);
+      assert(Buffer.byteLength(sub.directoryName, 'utf8') <= 140);
+    }
+    const named = await h.subscribe('已带平台（网易云）', 'third');
+    assert.equal(named.directoryName, '已带平台（网易云）');
+  });
+  await check('legacy automatic names migrate safely while custom names remain unchanged', async () => {
+    const h = harness('platform-migration'); h.add('A'); const sub = await h.subscribe('同名');
+    h.api.renameNavidromePlaylist(sub.id, '旧歌单'); h.api.stop();
+    const saved = h.database.get('subscriptions/state').subscriptions[0];
+    delete saved.playlistName; delete saved.playlistNameCustomized; delete saved.playlistNameSource;
+    fs.mkdirSync(path.join(h.root, '同名（网易云）')); fs.writeFileSync(path.join(h.root, '同名（网易云）', 'sentinel'), 'USER');
+    const restored = harness('unused', h.database, h.root);
+    const migrated = restored.view(sub.id); assert(migrated.directoryName.endsWith('（网易云）'));
+    assert.notEqual(migrated.directoryName, '同名（网易云）'); assert(!fs.existsSync(path.join(h.root, '旧歌单')));
+    assert(fs.existsSync(path.join(h.root, migrated.directoryName, 'A.flac')));
+    assert.equal(fs.readFileSync(path.join(h.root, '同名（网易云）', 'sentinel'), 'utf8'), 'USER');
+    restored.api.renameNavidromePlaylist(sub.id, '手动收藏'); restored.api.stop();
+    const customSaved = h.database.get('subscriptions/state').subscriptions[0]; delete customSaved.playlistNameCustomized; delete customSaved.playlistNameSource;
+    const again = harness('unused', h.database, h.root);
+    assert.equal(again.view(sub.id).directoryName, '手动收藏'); assert.equal(again.api.getDownloadDirectory(song('A')), '手动收藏');
+  });
+  await check('Navidrome names remain independent of subscription titles and persist across restart', async () => {
+    const h = harness('navidrome-rename'); h.add('A'); const sub = await h.subscribe('远端标题');
+    const renamed = h.api.renameNavidromePlaylist(sub.id, '我的收藏');
+    assert.equal(renamed.name, '我的收藏'); assert.equal(renamed.subscriptionName, '远端标题');
+    assert.equal(renamed.playlistPath, '我的收藏/我的收藏.m3u8'); assert(!fs.existsSync(path.join(h.root, sub.directoryName)));
+    assert.equal(h.api.getDownloadDirectory(song('A')), '我的收藏');
+    h.remote([song('A'), song('C')]); await h.api.checkNow('shared', sub.id);
+    assert.equal(h.api.getDownloadDirectory(song('C')), '我的收藏');
+    await h.api.update('shared', sub.id, { enabled: false }); assert.equal(h.api.getDownloadDirectory(song('C')), '我的收藏');
+    const unmatched = h.api.renameNavidromePlaylist('local-unmatched', '其他音乐');
+    assert.equal(unmatched.name, '其他音乐'); h.api.reconcilePlaylists(); h.api.stop();
+    const restored = harness('unused', h.database, h.root);
+    assert.equal(restored.api.getUnmatchedPlaylist().name, '其他音乐');
+    assert.equal(restored.api.getDownloadDirectory(song('C')), '我的收藏');
+    assert.equal(restored.api.listNavidromePlaylists().find(item => item.id === sub.id).name, '我的收藏');
+  });
+  await check('Navidrome rejects conflicting and unsafe names without moving files', async () => {
+    const h = harness('navidrome-conflicts'); h.add('A'); const sub = await h.subscribe(); const before = h.read(sub.id);
+    fs.mkdirSync(path.join(h.root, '用户目录'));
+    for (const name of ['', '../escape', 'CON', '用户目录']) assert.throws(() => h.api.renameNavidromePlaylist(sub.id, name));
+    assert.equal(h.read(sub.id), before);
+    h.deps.isDirectoryBusy = () => true;
+    assert.throws(() => h.api.renameNavidromePlaylist(sub.id, '新名称'), /正在下载/); assert.equal(h.read(sub.id), before);
+  });
+  await check('waiting downloads follow the latest folder name and completed paths rebase after rename', async () => {
+    const h = harness('navidrome-queue'); h.remote([song('A')]);
+    let releaseScan, releaseWrite, destination;
+    h.cache.downloadAndCache = async (_song, _url, _quality, _user, _signal, _download, _lyric, _embed, _provenance, options) => {
+      destination = options.relativeDirectory;
+      await new Promise(resolve => { releaseWrite = resolve; });
+      const filename = `${destination}/A.flac`; h.add('A', filename); return filename;
+    };
+    const queue = load('src/server/serverDownloadQueue.ts', { './fileCache': h.cache, '@/storage/database': h.db });
+    queue.setLocalMusicScanPromise(new Promise(resolve => { releaseScan = resolve; }));
+    queue.initialize(async task => ({ url: 'fixture', songInfo: task.songInfo }));
+    queue.setDirectoryResolver(songInfo => h.api.getDownloadDirectory(songInfo));
+    queue.setCompletionListener(() => h.api.reconcilePlaylists());
+    h.deps.enqueue = (_user, inputs) => queue.enqueue('shared', inputs);
+    h.deps.getReadySongs = () => [...h.available, ...queue.getCompletedSongs()];
+    h.deps.isDirectoryBusy = directory => queue.isDirectoryBusy(directory);
+    h.deps.onDirectoryRenamed = (oldDir, newDir) => {
+      for (const item of h.available) if (item.filename.startsWith(oldDir + '/')) item.filename = newDir + item.filename.slice(oldDir.length);
+      queue.rebaseDirectory(oldDir, newDir);
+    };
+    const sub = await h.subscribe(); h.api.renameNavidromePlaylist(sub.id, '开始前改名');
+    releaseScan(); await flush(); assert.equal(destination, '开始前改名', JSON.stringify(queue.list('shared')));
+    assert.throws(() => h.api.renameNavidromePlaylist(sub.id, '写入中改名'), /正在下载/);
+    releaseWrite(); await flush(); await flush();
+    assert(fs.existsSync(path.join(h.root, '开始前改名/A.flac'))); assert(!fs.existsSync(path.join(h.root, 'A.flac')));
+    h.api.renameNavidromePlaylist(sub.id, '完成后改名');
+    assert.equal(queue.getCompletedSongs()[0].filename, '完成后改名/A.flac'); assert.equal(h.view(sub.id).playlistTrackCount, 1);
+    assert(h.read(sub.id).includes('./A.flac'));
+  });
   await check('legacy unmatched playlist name migrates without changing audio files', () => {
     const h = harness('unmatched-old-name'); h.add('A'); h.api.reconcilePlaylists(); h.api.stop();
     const saved = h.database.get('subscriptions/state').unmatchedPlaylist;
