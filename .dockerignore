@@ -1,0 +1,15 @@
+.git
+.gitignore
+node_modules
+data
+server
+cache
+download
+logs
+temp
+config.js
+.env
+*.log
+.vscode
+dist-electron
+build

@@ -1,0 +1,15 @@
+services:
+  lx-download-server:
+    build: .
+    image: lx-download:local
+    container_name: lx-download-server
+    restart: unless-stopped
+    ports:
+      - "9527:9527"
+    volumes:
+      - ./data:/server/data
+      - ./cache:/server/cache
+      - ./download:/server/download
+      - ./logs:/server/logs
+    environment:
+      WEBPLAYER_TOKEN: CHANGE_ME_TO_A_RANDOM_TOKEN
