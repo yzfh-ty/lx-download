@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Image version without or with the leading v
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,7 +44,12 @@ jobs:
         id: get_version
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${VERSION#v}"
+          fi
           if [ -z "$VERSION" ]; then
             echo "Release tag version is empty" >&2
             exit 1
