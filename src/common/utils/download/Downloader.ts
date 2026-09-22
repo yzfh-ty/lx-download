@@ -93,7 +93,7 @@ class Task extends EventEmitter {
               reject(errOpen)
               return
             }
-            fs.read(fd, Buffer.alloc(10), 0, 10, stats.size - 10, (errRead, bytesRead, buffer) => {
+            fs.read(fd, Buffer.alloc(10), 0, 10, stats.size - 10, (errRead, _bytesRead, buffer) => {
               if (errRead) {
                 this.__handleError(errRead)
                 reject(errRead)

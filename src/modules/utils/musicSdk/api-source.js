@@ -1,6 +1,5 @@
 // ========================================
 // 服务器端版本的 api-source.js
-// 移除了对 @renderer/store 的依赖
 // ========================================
 
 import apiSourceInfo from './api-source-info'

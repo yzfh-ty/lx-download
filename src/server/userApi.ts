@@ -7,7 +7,6 @@ import * as crypto from 'crypto'
 import * as zlib from 'zlib'
 import { promisify } from 'util'
 
-import * as tunnel from 'tunnel'
 import { SourceRuntime } from './sourceRuntime'
 const inflate = promisify(zlib.inflate)
 const deflate = promisify(zlib.deflate)
@@ -434,7 +433,7 @@ export async function callUserApiGetMusicUrl(
     source: string,
     songInfo: any,
     quality: string,
-    clientUsername?: string,
+    _clientUsername?: string,
     onProgress?: (attempt: any) => Promise<void> | void,
     enableAutoSwitchApiSource?: boolean
 ): Promise<{ url: string, type: string, sourceName?: string, attempts?: any[] }> {
@@ -865,9 +864,9 @@ export function getLoadedApis() {
 }
 
 // 检查某个源是否被支持
-// clientUsername: 调用者的用户名。如果未提供，则只能检查 open 源
-export function isSourceSupported(source: string, clientUsername?: string): boolean {
-    for (const [apiId, api] of loadedApis) {
+// 单 Web 实例保留调用方参数兼容，源权限按 open/shared 判断。
+export function isSourceSupported(source: string, _clientUsername?: string): boolean {
+    for (const api of loadedApis.values()) {
         if (!api.info.enabled || !api.info.sources || !api.info.sources[source]) {
             continue
         }

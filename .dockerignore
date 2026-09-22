@@ -11,5 +11,3 @@ config.js
 .env
 *.log
 .vscode
-dist-electron
-build

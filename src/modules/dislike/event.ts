@@ -19,7 +19,7 @@ import { EventEmitter } from 'events'
 const dislikeUpdated = () => {
   // return createSnapshot()
 }
-export const checkUpdateDislike = async(changedIds: string[]) => {
+export const checkUpdateDislike = async(_changedIds: string[]) => {
   // if (!changedIds.length) return
   // await saveDislikeMusics(changedIds.map(id => ({ id, musics: allMusicDislike.get(id) as LX.Dislike.DislikeMusics })))
   // global.app_event.myDislikeMusicUpdate(changedIds)

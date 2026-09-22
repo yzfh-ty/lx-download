@@ -179,27 +179,6 @@ checkAndCreateDir(global.lx.userPath)
 initLogger()
 
 
-/**
- * Normalize a port into a number, string, or false.
- */
-
-function normalizePort(val: string) {
-  const port = parseInt(val, 10)
-
-  if (isNaN(port) || port < 1) {
-    // named pipe
-    exit(`port illegal: ${val}`)
-  }
-  return port
-}
-
-/**
- * Get port from environment and store in Express.
- */
-
-// const port = normalizePort(envParams.PORT ?? '9527')
-// const bindIP = envParams.BIND_IP ?? '127.0.0.1'
-
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { createModuleEvent } = require('@/event')
 createModuleEvent()

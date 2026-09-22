@@ -3,11 +3,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { getIP } from '@/utils/tools'
 import { accessLog, startupLog, loginLog } from '@/utils/log4js'
-import formidable from 'formidable'
 // @ts-ignore
 import musicSdkRaw from '@/modules/utils/musicSdk/index.js'
 const musicSdk = musicSdkRaw as any
-import { initUserApis, callUserApiGetMusicUrl, isSourceSupported, getLoadedApis } from './userApi'
+import { initUserApis, callUserApiGetMusicUrl, isSourceSupported } from './userApi'
 import * as customSourceHandlers from './customSourceHandlers'
 import * as fileCache from './fileCache'
 import * as serverDownloadQueue from './serverDownloadQueue'
@@ -215,19 +214,6 @@ const normalizeSongInfo = (songInfo: any) => {
 
 // 音乐解析进度 SSE 专属通道: requestId -> response
 const musicProgressClients = new Map<string, http.ServerResponse>()
-
-/** [新增] 服务器内部热重载数据 */
-const checkAndCreateDir = (p: string) => {
-  try {
-    if (!fs.existsSync(p)) {
-      fs.mkdirSync(p, { recursive: true })
-    }
-  } catch (e: any) {
-    if (e.code !== 'EEXIST') {
-      console.error(`Could not create directory ${p}:`, e.message)
-    }
-  }
-}
 
 const readBody = async (req: IncomingMessage) => await new Promise<string>((resolve, reject) => {
   const chunks: any[] = []
@@ -1009,7 +995,6 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
             if (!Array.isArray(tasks) || tasks.length === 0) throw new Error('Missing tasks')
             if (concurrency !== undefined) serverDownloadQueue.setConcurrency(username, concurrency)
             if (namingPattern) {
-              const auth = req.headers['x-frontend-auth']
               if (!checkPlayerAuth(req)) throw new Error('Unauthorized to change cache naming pattern')
               const normalizedNamingPattern = fileCache.setNamingPattern(namingPattern)
               if (global.lx.config) global.lx.config['cache.namingPattern'] = normalizedNamingPattern
@@ -1116,7 +1101,6 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
               username = verified
             }
             if (namingPattern) {
-              const auth = req.headers['x-frontend-auth']
               if (!checkPlayerAuth(req)) {
                 res.writeHead(403, { 'Content-Type': 'application/json' })
                 res.end(JSON.stringify({ success: false, error: 'Unauthorized to change cache naming pattern' }))
@@ -2101,7 +2085,6 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
       // [新增] 音乐搜索 API
       if (pathname === '/api/music/search' && req.method === 'GET') {
         const name = urlObj.searchParams.get('name') || ''
-        const singer = urlObj.searchParams.get('singer') || ''
         const source = urlObj.searchParams.get('source') || 'kw'
         const type = urlObj.searchParams.get('type') || 'song' // 新增 type 参数: song, singer, album, playlist
         const limit = parseInt(urlObj.searchParams.get('limit') || '20')
@@ -2297,7 +2280,6 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
       if (pathname === '/api/music/url' && req.method === 'POST') {
         const verifiedUsername = 'shared'
 
-        const clientId = req.headers['x-client-id'] as string | undefined
         const reqId = req.headers['x-req-id'] as string | undefined
 
         await readBody(req).then(async body => {
@@ -2728,7 +2710,6 @@ const handleStartServer = async (port = 9527, ip = '127.0.0.1') => await new Pro
       // File Management - List Files
       // File Management - Download File
       if (pathname === '/api/files/download' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
         if (!checkPlayerAuth(req)) {
           res.writeHead(401)
           res.end('Unauthorized')

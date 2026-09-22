@@ -6,7 +6,6 @@ import path from 'path'
 import http from 'http'
 import https from 'https'
 import crypto from 'crypto'
-import { PassThrough } from 'stream'
 const { MusicTagger, MetaPicture } = require('music-tag-native')
 const { setMeta } = require('../common/utils/musicMeta')
 const iconv = require('iconv-lite')
@@ -123,7 +122,7 @@ type LyricFetcher = (songInfo: any, username?: string, allowFallback?: boolean) 
 let _lyricFetcher: LyricFetcher | null = null
 export const setLyricFetcher = (fn: LyricFetcher) => { _lyricFetcher = fn }
 
-export const getCacheDir = (username?: string, isOnlyDownload?: boolean, location?: string) => {
+export const getCacheDir = (username?: string, isOnlyDownload?: boolean, _location?: string) => {
     const staging = username ? remasterStorage.get(username) : undefined
     if (staging) {
         fs.mkdirSync(staging.audio, { recursive: true })
@@ -142,7 +141,7 @@ export const getCacheDir = (username?: string, isOnlyDownload?: boolean, locatio
     return baseDir
 }
 
-export const getCoverCacheDir = (username?: string, location?: string) => {
+export const getCoverCacheDir = (username?: string, _location?: string) => {
     const staging = username ? remasterStorage.get(username) : undefined
     if (staging) {
         fs.mkdirSync(staging.covers, { recursive: true })
@@ -209,13 +208,13 @@ export interface DownloadProvenance {
 class CacheIndexManager {
     private indexes: Map<string, Map<string, CacheItem>> = new Map() // "root:scope:folder" -> (songId -> CacheItem)
 
-    private getScope(username: string, folder: 'cache' | 'music') {
+    private getScope(username: string, _folder: 'cache' | 'music') {
         if (remasterStorage.has(username)) return username
         // All Web requests share one cache and download index.
         return 'shared'
     }
 
-    private getIndexFile(username: string, folder: 'cache' | 'music', location?: string) {
+    private getIndexFile(username: string, folder: 'cache' | 'music', _location?: string) {
         // Legacy JSON indexes used to sit beside the old cache files. New
         // indexes are stored in SQLite, so this path is read only for migration.
         const userDir = folder === 'music'
@@ -229,7 +228,7 @@ class CacheIndexManager {
         return path.join(userDir, fileName)
     }
 
-    private getKey(username: string, folder: 'cache' | 'music', location?: string) {
+    private getKey(username: string, folder: 'cache' | 'music', _location?: string) {
         const rootKey = remasterStorage.get(username)?.audio || (folder === 'music' ? resolveDownloadBase() : CACHE_ROOTS.ROOT)
         return `${rootKey}:${this.getScope(username, folder)}:${folder}`
     }
@@ -535,22 +534,6 @@ const ensureDir = (username?: string, isOnlyDownload?: boolean) => {
     return dir
 }
 
-// Safe rename: try rename, fall back to copy+unlink if rename fails (cross-device, permissions, etc.)
-const safeRenameSync = (src: string, dst: string) => {
-    try {
-        fs.renameSync(src, dst)
-        return true
-    } catch (err) {
-        try {
-            fs.copyFileSync(src, dst)
-            fs.unlinkSync(src)
-            return true
-        } catch (err2) {
-            throw err // keep original error context
-        }
-    }
-}
-
 /**
  * 规范化歌曲 ID：确保带上 source 前缀，与索引中的 Key 保持一致
  */
@@ -727,9 +710,6 @@ const getFileName = (songInfo: any, quality?: string, isOnlyDownload?: boolean, 
     if (baseName.length > 200) baseName = baseName.substring(0, 200)
     return baseName
 }
-
-// Helper to sanitize for URL/Path
-const sanitize = (str: any) => String(str || '').replace(/[\\/:*?"<>|]/g, '_')
 
 const activeDownloadPaths = new Set<string>()
 export const hasActiveDownloads = () => activeDownloadPaths.size > 0
@@ -2329,7 +2309,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                 ext = inspection.extension || ext
                 const actualQuality = inspection.quality || quality || 'unknown'
                 const preferredName = getFileName(songInfo, actualQuality, isOnlyDownload, username)
-                installDownloadedFile(tempPath, dir, preferredName, ext).then(async ({ finalPath, finalBaseName }) => {
+                installDownloadedFile(tempPath, dir, preferredName, ext).then(async ({ finalPath }) => {
 
                     let imageBuffer: Buffer | undefined
                     let imageMime = 'image/jpeg'

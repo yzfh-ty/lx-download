@@ -118,7 +118,7 @@ async function getScriptInfo(scriptContent: string, allowUnsafeVM: boolean = fal
 }
 
 // 辅助函数：获取源存储目录
-function getSourceDir(username?: string) {
+function getSourceDir(_username?: string) {
     const dataPath = process.env.DATA_PATH || path.join(process.cwd(), 'data')
     // Single Web client: custom sources are shared by the whole instance.
     return path.join(dataPath, 'source')
@@ -412,9 +412,8 @@ export async function handleImport(req: IncomingMessage, res: ServerResponse) {
 
 // 获取列表
 // All custom sources are shared by the Web instance.
-export async function handleList(req: IncomingMessage, res: ServerResponse, username: string) {
+export async function handleList(_req: IncomingMessage, res: ServerResponse, username: string) {
     const openSources: any[] = []
-    const userSources: any[] = []
 
     // 1. 读取 Open 源
     const openSourcesDir = getSourceDir('open') // -> .../_open
@@ -697,7 +696,7 @@ export async function handleReorder(req: IncomingMessage, res: ServerResponse) {
                     currentSourcesMap.delete(id)
                 }
             }
-            for (const [id, source] of currentSourcesMap) {
+            for (const source of currentSourcesMap.values()) {
                 newSources.push(source)
             }
             fs.writeFileSync(metaPath, JSON.stringify(newSources, null, 2))
@@ -717,7 +716,7 @@ export async function handleReorder(req: IncomingMessage, res: ServerResponse) {
                         currentSourcesMap.delete(id)
                     }
                 }
-                for (const [id, source] of currentSourcesMap) {
+                for (const source of currentSourcesMap.values()) {
                     newSources.push(source)
                 }
                 fs.writeFileSync(openMetaPath, JSON.stringify(newSources, null, 2))

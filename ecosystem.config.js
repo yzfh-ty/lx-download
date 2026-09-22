@@ -3,8 +3,6 @@ module.exports = {
     {
       name: 'lx-playlist-download-server',
       script: './index.js',
-      // node_args: '-r ts-node/register -r tsconfig-paths/register',
-      // script: './bin/www',
       max_memory_restart: '1024M',
       stop_exit_codes: [0],
       exp_backoff_restart_delay: 100,
